@@ -35,6 +35,7 @@ class TranscriptionService {
               TranscriptionResult(
                 text: text,
                 isFinal: data['is_final'] == true,
+                source: (data['source'] as String?) ?? 'unknown',
                 confidence: data['confidence']?.toDouble() ?? 0.0,
               ),
             );
@@ -72,7 +73,7 @@ class TranscriptionService {
     }
   }
 
-  void sendAudio(dynamic audioData) {
+  void sendAudio(dynamic audioData, {String source = 'mic'}) {
     final channel = _channel;
     if (channel == null) {
       // Avoid log spam in tight loop.
@@ -90,6 +91,7 @@ class TranscriptionService {
       channel.sink.add(
         jsonEncode({
           'type': 'audio',
+          'source': source,
           'audio': base64Audio,
         }),
       );
@@ -126,11 +128,13 @@ class TranscriptionService {
 class TranscriptionResult {
   final String text;
   final bool isFinal;
+  final String source;
   final double confidence;
 
   TranscriptionResult({
     required this.text,
     required this.isFinal,
+    required this.source,
     required this.confidence,
   });
 }

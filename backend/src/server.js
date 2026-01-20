@@ -31,7 +31,61 @@ const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
 wss.on('connection', (ws) => {
   console.log('Client connected');
 
-  let deepgramLive = null;
+  let deepgramMic = null;
+  let deepgramSystem = null;
+
+  const startDeepgram = (source) => {
+    const live = deepgram.listen.live({
+      model: 'nova-3',
+      language: 'en',
+      smart_format: true,
+      punctuate: true,
+      interim_results: true,
+      encoding: 'linear16',
+      sample_rate: 16000,
+    });
+
+    live.on(LiveTranscriptionEvents.Open, () => {
+      console.log(`Deepgram connection opened (${source})`);
+      ws.send(JSON.stringify({ type: 'status', message: `ready:${source}` }));
+    });
+
+    live.on(LiveTranscriptionEvents.Transcript, (data) => {
+      const transcript = data.channel.alternatives[0]?.transcript;
+      if (transcript) {
+        const isFinal = data.is_final === true;
+        const isInterim = data.is_final === false;
+        ws.send(
+          JSON.stringify({
+            type: 'transcript',
+            source,
+            text: transcript,
+            is_final: isFinal,
+            is_interim: isInterim,
+            confidence: data.channel.alternatives[0].confidence || 0,
+          }),
+        );
+      }
+    });
+
+    live.on(LiveTranscriptionEvents.Error, (error) => {
+      console.error(`Deepgram error (${source}):`, error);
+      ws.send(
+        JSON.stringify({
+          type: 'error',
+          message: error.message || `Deepgram error (${source})`,
+        }),
+      );
+    });
+
+    live.on(LiveTranscriptionEvents.Close, () => {
+      console.log(`Deepgram connection closed (${source})`);
+      if (source === 'mic') deepgramMic = null;
+      if (source === 'system') deepgramSystem = null;
+    });
+
+    return live;
+  };
 
   // Handle incoming messages from client
   ws.on('message', async (message) => {
@@ -59,70 +113,52 @@ wss.on('connection', (ws) => {
           return;
         }
 
-        // Initialize Deepgram live connection
-        console.log('Starting Deepgram connection...');
+        // Initialize Deepgram live connections (mic + system)
+        console.log('Starting Deepgram connections (mic + system)...');
         
         try {
-          deepgramLive = deepgram.listen.live({
-            model: 'nova-3',
-            language: 'en',
-            smart_format: true,
-            punctuate: true,
-            interim_results: true,
-            encoding: 'linear16',
-            sample_rate: 16000,
-          });
+          if (deepgramMic) {
+            deepgramMic.finish();
+            deepgramMic = null;
+          }
+          if (deepgramSystem) {
+            deepgramSystem.finish();
+            deepgramSystem = null;
+          }
 
-          // Handle Deepgram events
-          deepgramLive.on(LiveTranscriptionEvents.Open, () => {
-            console.log('Deepgram connection opened');
-            ws.send(JSON.stringify({ type: 'status', message: 'ready' }));
-          });
-
-          deepgramLive.on(LiveTranscriptionEvents.Transcript, (data) => {
-            const transcript = data.channel.alternatives[0]?.transcript;
-            if (transcript) {
-              const isFinal = data.is_final === true;
-              const isInterim = data.is_final === false;
-              ws.send(JSON.stringify({
-                type: 'transcript',
-                text: transcript,
-                is_final: isFinal,
-                is_interim: isInterim,
-                confidence: data.channel.alternatives[0].confidence || 0
-              }));
-            }
-          });
-
-          deepgramLive.on(LiveTranscriptionEvents.Error, (error) => {
-            console.error('Deepgram error:', error);
-            ws.send(JSON.stringify({ type: 'error', message: error.message || 'Deepgram error' }));
-          });
-
-          deepgramLive.on(LiveTranscriptionEvents.Close, () => {
-            console.log('Deepgram connection closed');
-            deepgramLive = null;
-          });
+          deepgramMic = startDeepgram('mic');
+          deepgramSystem = startDeepgram('system');
         } catch (error) {
           console.error('Failed to start Deepgram connection:', error);
           ws.send(JSON.stringify({ type: 'error', message: 'Failed to connect to Deepgram: ' + error.message }));
-          deepgramLive = null;
+          deepgramMic = null;
+          deepgramSystem = null;
         }
 
-      } else if (data.type === 'audio' && deepgramLive) {
-        // Forward audio data to Deepgram
+      } else if (data.type === 'audio') {
+        const source = data.source === 'system' ? 'system' : 'mic';
+        const target = source === 'system' ? deepgramSystem : deepgramMic;
+        if (!target) return;
+
+        // Forward audio data to Deepgram (per-source session)
         try {
           const audioBuffer = Buffer.from(data.audio, 'base64');
-          deepgramLive.send(audioBuffer);
+          target.send(audioBuffer);
         } catch (error) {
           console.error('Error sending audio to Deepgram:', error);
           ws.send(JSON.stringify({ type: 'error', message: 'Error processing audio' }));
         }
-      } else if (data.type === 'stop' && deepgramLive) {
-        // Close Deepgram connection
-        console.log('Stopping transcription...');
-        deepgramLive.finish();
-        deepgramLive = null;
+      } else if (data.type === 'stop') {
+        // Close Deepgram connections
+        console.log('Stopping transcription (mic + system)...');
+        if (deepgramMic) {
+          deepgramMic.finish();
+          deepgramMic = null;
+        }
+        if (deepgramSystem) {
+          deepgramSystem.finish();
+          deepgramSystem = null;
+        }
         ws.send(JSON.stringify({ type: 'status', message: 'stopped' }));
       }
     } catch (error) {
@@ -133,9 +169,8 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     console.log('Client disconnected');
-    if (deepgramLive) {
-      deepgramLive.finish();
-    }
+    if (deepgramMic) deepgramMic.finish();
+    if (deepgramSystem) deepgramSystem.finish();
   });
 
   ws.on('error', (error) => {

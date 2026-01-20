@@ -5,43 +5,37 @@ import 'dart:io' show Platform;
 import '../services/transcription_service.dart';
 import '../services/audio_capture_service.dart';
 import '../services/windows_audio_service.dart';
+import '../models/transcript_bubble.dart';
 
 class SpeechToTextProvider extends ChangeNotifier {
   TranscriptionService? _transcriptionService;
   AudioCaptureService? _audioCaptureService;
   Timer? _mockAudioTimer;
   Timer? _systemAudioPollTimer;
-  final List<int> _systemAudioBuffer = <int>[];
   bool _isSystemAudioCapturing = false;
   
   bool _isRecording = false;
   bool _isConnected = false;
-  String _transcriptText = '';
-  String _interimText = '';
+  final List<TranscriptBubble> _bubbles = <TranscriptBubble>[];
   String _errorMessage = '';
   int _audioFrameCount = 0;
 
   bool get isRecording => _isRecording;
   bool get isConnected => _isConnected;
-  String get transcriptText => _transcriptText;
-  String get interimText => _interimText;
+  List<TranscriptBubble> get bubbles => List.unmodifiable(_bubbles);
   String get errorMessage => _errorMessage;
 
-  String _appendFinalWithOverlap(String existing, String next) {
+  String _appendWithOverlap(String existing, String next) {
     final nextTrimmed = next.trim();
     if (nextTrimmed.isEmpty) return existing;
 
-    var existingTrimmed = existing.trimRight();
-    if (existingTrimmed.isEmpty) {
-      return '$nextTrimmed ';
+    final existingTrimmed = existing.trimRight();
+    if (existingTrimmed.isEmpty) return nextTrimmed;
+
+    if (existingTrimmed.toLowerCase().endsWith(nextTrimmed.toLowerCase())) {
+      return existingTrimmed;
     }
 
-    // If already present at the end, don't append.
-    if (existingTrimmed.endsWith(nextTrimmed)) {
-      return existingTrimmed + (existing.endsWith(' ') ? '' : ' ');
-    }
-
-    // Compute overlap using only a tail window to keep it fast.
     const tailWindow = 200;
     final tail = existingTrimmed.substring(
       existingTrimmed.length > tailWindow ? existingTrimmed.length - tailWindow : 0,
@@ -59,15 +53,65 @@ class SpeechToTextProvider extends ChangeNotifier {
     }
 
     final toAppend = nextTrimmed.substring(overlap);
-    final needsSpace = existingTrimmed.isNotEmpty &&
-        !existingTrimmed.endsWith(' ') &&
-        !existingTrimmed.endsWith('\n');
+    if (toAppend.isEmpty) return existingTrimmed;
 
-    if (toAppend.isEmpty) {
-      return existingTrimmed + (existing.endsWith(' ') ? '' : ' ');
+    final needsSpace = !existingTrimmed.endsWith(' ') && !existingTrimmed.endsWith('\n');
+    return existingTrimmed + (needsSpace ? ' ' : '') + toAppend;
+  }
+
+  void _upsertFinalBubble({required TranscriptSource source, required String text}) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return;
+
+    // If the last bubble is from the same source, merge into it to reduce fragmentation.
+    if (_bubbles.isNotEmpty && _bubbles.last.source == source) {
+      // If the last bubble is a draft, finalize it in-place.
+      if (_bubbles.last.isDraft) {
+        _bubbles[_bubbles.length - 1] = _bubbles.last.copyWith(
+          text: trimmed,
+          isDraft: false,
+          timestamp: DateTime.now(),
+        );
+        return;
+      }
+
+      final merged = _appendWithOverlap(_bubbles.last.text, trimmed);
+      _bubbles[_bubbles.length - 1] = _bubbles.last.copyWith(text: merged);
+      return;
     }
 
-    return existingTrimmed + (needsSpace ? ' ' : '') + toAppend + ' ';
+    _bubbles.add(
+      TranscriptBubble(
+        source: source,
+        text: trimmed,
+        timestamp: DateTime.now(),
+        isDraft: false,
+      ),
+    );
+  }
+
+  void _upsertDraftBubble({required TranscriptSource source, required String text}) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return;
+
+    // Update existing draft bubble for this source if it is the most recent.
+    if (_bubbles.isNotEmpty && _bubbles.last.source == source && _bubbles.last.isDraft) {
+      _bubbles[_bubbles.length - 1] = _bubbles.last.copyWith(
+        text: trimmed,
+        timestamp: DateTime.now(),
+      );
+      return;
+    }
+
+    // Otherwise append a new draft bubble (interleaved transcripts are expected).
+    _bubbles.add(
+      TranscriptBubble(
+        source: source,
+        text: trimmed,
+        timestamp: DateTime.now(),
+        isDraft: true,
+      ),
+    );
   }
 
   Future<bool> requestPermissions() async {
@@ -80,12 +124,18 @@ class SpeechToTextProvider extends ChangeNotifier {
     
     _transcriptionService!.transcriptStream.listen(
       (result) {
+        final source = switch (result.source) {
+          'mic' => TranscriptSource.mic,
+          'system' => TranscriptSource.system,
+          _ => TranscriptSource.unknown,
+        };
+
         if (result.isFinal) {
-          _transcriptText = _appendFinalWithOverlap(_transcriptText, result.text);
-          _interimText = '';
+          _upsertFinalBubble(source: source, text: result.text);
         } else {
-          _interimText = result.text;
+          _upsertDraftBubble(source: source, text: result.text);
         }
+
         notifyListeners();
       },
       onError: (error) {
@@ -100,8 +150,8 @@ class SpeechToTextProvider extends ChangeNotifier {
       print('[SpeechToTextProvider] Starting recording...');
       _errorMessage = '';
       _audioFrameCount = 0;
-      _systemAudioBuffer.clear();
       _isSystemAudioCapturing = false;
+      _bubbles.clear();
       
       // Request permissions
       final hasPermission = await requestPermissions();
@@ -129,11 +179,7 @@ class SpeechToTextProvider extends ChangeNotifier {
               // Pull ~50ms at 16kHz mono PCM16 => 16000*0.05*2 = 1600 bytes
               WindowsAudioService.getSystemAudioFrame(lengthBytes: 1600).then((frame) {
                 if (frame.isEmpty) return;
-                _systemAudioBuffer.addAll(frame);
-                // Cap buffer to ~2 seconds (64000 bytes)
-                if (_systemAudioBuffer.length > 64000) {
-                  _systemAudioBuffer.removeRange(0, _systemAudioBuffer.length - 64000);
-                }
+                _transcriptionService?.sendAudio(frame, source: 'system');
               });
             },
           );
@@ -149,24 +195,7 @@ class SpeechToTextProvider extends ChangeNotifier {
           if (_audioFrameCount % 10 == 0) {
             print('[SpeechToTextProvider] Audio frame #$_audioFrameCount: ${audioData.length} bytes');
           }
-          if (_isSystemAudioCapturing) {
-            // Consume exactly the same number of bytes as mic chunk.
-            final need = audioData.length;
-            List<int> systemChunk;
-            if (_systemAudioBuffer.length >= need) {
-              systemChunk = _systemAudioBuffer.sublist(0, need);
-              _systemAudioBuffer.removeRange(0, need);
-            } else {
-              // Not enough system audio yet; pad with zeros.
-              systemChunk = List<int>.filled(need, 0);
-              _systemAudioBuffer.clear();
-            }
-
-            final mixed = WindowsAudioService.mixAudio(audioData, systemChunk);
-            _transcriptionService?.sendAudio(mixed);
-          } else {
-            _transcriptionService?.sendAudio(audioData);
-          }
+          _transcriptionService?.sendAudio(audioData, source: 'mic');
         },
       );
 
@@ -215,7 +244,6 @@ class SpeechToTextProvider extends ChangeNotifier {
         await WindowsAudioService.stopSystemAudioCapture();
       }
       _isSystemAudioCapturing = false;
-      _systemAudioBuffer.clear();
       
       // Stop audio capture
       await _audioCaptureService?.stopCapturing();
@@ -237,8 +265,7 @@ class SpeechToTextProvider extends ChangeNotifier {
   }
 
   void clearTranscript() {
-    _transcriptText = '';
-    _interimText = '';
+    _bubbles.clear();
     _errorMessage = '';
     notifyListeners();
   }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/speech_to_text_provider.dart';
+import '../models/transcript_bubble.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -14,17 +15,20 @@ class _HomeScreenState extends State<HomeScreen> {
       TextEditingController(text: 'ws://localhost:3000/listen');
 
   final ScrollController _transcriptScrollController = ScrollController();
-  int _lastTranscriptLength = 0;
-  int _lastInterimLength = 0;
+  int _lastBubbleCount = 0;
+  String _lastTailSignature = '';
 
   void _maybeAutoScroll(SpeechToTextProvider provider) {
-    final transcriptLength = provider.transcriptText.length;
-    final interimLength = provider.interimText.length;
+    final bubbleCount = provider.bubbles.length;
 
-    final changed = transcriptLength != _lastTranscriptLength ||
-        interimLength != _lastInterimLength;
-    _lastTranscriptLength = transcriptLength;
-    _lastInterimLength = interimLength;
+    final tail = provider.bubbles.isNotEmpty ? provider.bubbles.last : null;
+    final tailSignature = tail == null
+      ? ''
+      : '${tail.source}:${tail.isDraft}:${tail.text.length}:${tail.timestamp.millisecondsSinceEpoch}';
+
+    final changed = bubbleCount != _lastBubbleCount || tailSignature != _lastTailSignature;
+    _lastBubbleCount = bubbleCount;
+    _lastTailSignature = tailSignature;
 
     if (!changed) return;
 
@@ -42,6 +46,36 @@ class _HomeScreenState extends State<HomeScreen> {
         curve: Curves.easeOut,
       );
     });
+  }
+
+  Widget _buildBubble({required TranscriptSource source, required String text}) {
+    final isMe = source == TranscriptSource.mic;
+
+    final backgroundColor = isMe ? Colors.blue.shade600 : Colors.grey.shade300;
+    final textColor = isMe ? Colors.white : Colors.black87;
+
+    return Align(
+      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520),
+        child: Container(
+          margin: const EdgeInsets.symmetric(vertical: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: backgroundColor,
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Text(
+            text,
+            style: TextStyle(
+              fontSize: 16,
+              color: textColor,
+              fontStyle: FontStyle.normal,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -160,45 +194,33 @@ class _HomeScreenState extends State<HomeScreen> {
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(color: Colors.grey.shade300),
                     ),
-                    child: SingleChildScrollView(
-                      controller: _transcriptScrollController,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (provider.transcriptText.isEmpty &&
-                              provider.interimText.isEmpty)
-                            const Center(
-                              child: Text(
-                                'Tap the microphone button to start recording',
-                                style: TextStyle(
-                                  color: Colors.grey,
-                                  fontSize: 16,
-                                ),
-                              ),
-                            )
-                          else ...[
-                            // Final transcript
-                            Text(
-                              provider.transcriptText,
-                              style: const TextStyle(
+                    child: Builder(
+                      builder: (context) {
+                        final bubbles = provider.bubbles;
+                        final hasAny = bubbles.isNotEmpty;
+
+                        if (!hasAny) {
+                          return const Center(
+                            child: Text(
+                              'Tap the microphone button to start recording',
+                              style: TextStyle(
+                                color: Colors.grey,
                                 fontSize: 16,
-                                color: Colors.black87,
                               ),
                             ),
-                            // Interim transcript
-                            if (provider.interimText.isNotEmpty)
-                              Text(
-                                provider.interimText,
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  color: Colors.grey.shade600,
-                                  fontStyle: FontStyle.italic,
-                                ),
-                              ),
-                          ],
-                        ],
-                      ),
-                    ),
+                          );
+                        }
+
+                        return ListView.builder(
+                          controller: _transcriptScrollController,
+                          itemCount: bubbles.length,
+                          itemBuilder: (context, index) {
+                            final b = bubbles[index];
+                            return _buildBubble(source: b.source, text: b.text);
+                          },
+                        );
+                      },
+                    )
                   ),
                 ),
                 const SizedBox(height: 16),
