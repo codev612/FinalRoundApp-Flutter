@@ -94,7 +94,22 @@ cd .
 flutter pub get
 ```
 
-3. Update the server URL in `lib/screens/home_screen.dart` if needed (default: `ws://localhost:3000/listen`)
+3. Configure the server URL (default: `ws://localhost:3000/listen`)
+
+The frontend reads the WebSocket URL from a compile-time define:
+
+- Override at run time:
+  - `flutter run -d windows --dart-define=HEARNOW_SERVER_URL=ws://localhost:3000/listen`
+- Override at build time:
+  - `flutter build windows --dart-define=HEARNOW_SERVER_URL=ws://localhost:3000/listen`
+
+Optional: use a file instead of putting the URL on the command line:
+
+- Create `env.json`:
+  - `{ "HEARNOW_SERVER_URL": "ws://localhost:3000/listen" }`
+- Then run/build:
+  - `flutter run -d windows --dart-define-from-file=env.json`
+  - `flutter build windows --dart-define-from-file=env.json`
 
 ### Running on Different Platforms
 

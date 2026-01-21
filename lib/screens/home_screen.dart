@@ -1,19 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../config/app_config.dart';
 import '../providers/speech_to_text_provider.dart';
 import '../models/transcript_bubble.dart';
 
-class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+class InterviewPage extends StatefulWidget {
+  const InterviewPage({super.key});
 
   @override
-  State<HomeScreen> createState() => _HomeScreenState();
+  State<InterviewPage> createState() => _InterviewPageState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
-  final TextEditingController _serverUrlController =
-      TextEditingController(text: 'ws://localhost:3000/listen');
-
+class _InterviewPageState extends State<InterviewPage> {
   final ScrollController _transcriptScrollController = ScrollController();
   int _lastBubbleCount = 0;
   String _lastTailSignature = '';
@@ -83,190 +81,156 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final provider = context.read<SpeechToTextProvider>();
-      provider.initialize(_serverUrlController.text);
+      provider.initialize(AppConfig.serverWebSocketUrl);
     });
   }
 
   @override
   void dispose() {
-    _serverUrlController.dispose();
     _transcriptScrollController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: const Text('HearNow - Speech to Text'),
-      ),
-      body: Consumer<SpeechToTextProvider>(
-        builder: (context, provider, child) {
-          _maybeAutoScroll(provider);
-          return Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // Server URL input
-                TextField(
-                  controller: _serverUrlController,
-                  decoration: const InputDecoration(
-                    labelText: 'Server URL',
-                    border: OutlineInputBorder(),
-                    prefixIcon: Icon(Icons.link),
+    return Consumer<SpeechToTextProvider>(
+      builder: (context, provider, child) {
+        _maybeAutoScroll(provider);
+        return Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Status indicator
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Tooltip(
+                  message: provider.isConnected ? 'Connected' : 'Not connected',
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(20),
+                    onTap: () {
+                      // Intentionally no visible text; tooltip conveys state.
+                    },
+                    child: Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: provider.isConnected
+                            ? Colors.green.shade500
+                            : Colors.grey.shade400,
+                      ),
+                      child: Icon(
+                        provider.isConnected ? Icons.check : Icons.close,
+                        color: Colors.white,
+                        size: 20,
+                      ),
+                    ),
                   ),
-                  enabled: !provider.isRecording,
-                  onChanged: (value) {
-                    if (!provider.isRecording) {
-                      provider.initialize(value);
-                    }
-                  },
                 ),
-                const SizedBox(height: 16),
+              ),
+              const SizedBox(height: 16),
 
-                // Status indicator
+              // Error message
+              if (provider.errorMessage.isNotEmpty)
                 Container(
                   padding: const EdgeInsets.all(12),
+                  margin: const EdgeInsets.only(bottom: 16),
                   decoration: BoxDecoration(
-                    color: provider.isConnected
-                        ? Colors.green.shade100
-                        : Colors.grey.shade200,
+                    color: Colors.red.shade100,
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Row(
                     children: [
-                      Icon(
-                        provider.isConnected
-                            ? Icons.check_circle
-                            : Icons.circle_outlined,
-                        color: provider.isConnected
-                            ? Colors.green
-                            : Colors.grey,
-                      ),
+                      const Icon(Icons.error, color: Colors.red),
                       const SizedBox(width: 8),
-                      Text(
-                        provider.isConnected
-                            ? 'Connected'
-                            : 'Not connected',
-                        style: TextStyle(
-                          color: provider.isConnected
-                              ? Colors.green.shade900
-                              : Colors.grey.shade700,
-                          fontWeight: FontWeight.bold,
+                      Expanded(
+                        child: Text(
+                          provider.errorMessage,
+                          style: TextStyle(color: Colors.red.shade900),
                         ),
                       ),
                     ],
                   ),
                 ),
-                const SizedBox(height: 16),
 
-                // Error message
-                if (provider.errorMessage.isNotEmpty)
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    margin: const EdgeInsets.only(bottom: 16),
-                    decoration: BoxDecoration(
-                      color: Colors.red.shade100,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.error, color: Colors.red),
-                        const SizedBox(width: 8),
-                        Expanded(
+              // Transcript display
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.grey.shade300),
+                  ),
+                  child: Builder(
+                    builder: (context) {
+                      final bubbles = provider.bubbles;
+                      final hasAny = bubbles.isNotEmpty;
+
+                      if (!hasAny) {
+                        return const Center(
                           child: Text(
-                            provider.errorMessage,
-                            style: TextStyle(color: Colors.red.shade900),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-
-                // Transcript display
-                Expanded(
-                  child: Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade100,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.grey.shade300),
-                    ),
-                    child: Builder(
-                      builder: (context) {
-                        final bubbles = provider.bubbles;
-                        final hasAny = bubbles.isNotEmpty;
-
-                        if (!hasAny) {
-                          return const Center(
-                            child: Text(
-                              'Tap the microphone button to start recording',
-                              style: TextStyle(
-                                color: Colors.grey,
-                                fontSize: 16,
-                              ),
+                            'Tap the microphone button to start recording',
+                            style: TextStyle(
+                              color: Colors.grey,
+                              fontSize: 16,
                             ),
-                          );
-                        }
-
-                        return ListView.builder(
-                          controller: _transcriptScrollController,
-                          itemCount: bubbles.length,
-                          itemBuilder: (context, index) {
-                            final b = bubbles[index];
-                            return _buildBubble(source: b.source, text: b.text);
-                          },
+                          ),
                         );
-                      },
-                    )
+                      }
+
+                      return ListView.builder(
+                        controller: _transcriptScrollController,
+                        itemCount: bubbles.length,
+                        itemBuilder: (context, index) {
+                          final b = bubbles[index];
+                          return _buildBubble(source: b.source, text: b.text);
+                        },
+                      );
+                    },
                   ),
                 ),
-                const SizedBox(height: 16),
+              ),
+              const SizedBox(height: 16),
 
-                // Control buttons
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    // Clear button
-                    ElevatedButton.icon(
-                      onPressed: provider.isRecording
-                          ? null
-                          : provider.clearTranscript,
-                      icon: const Icon(Icons.clear),
-                      label: const Text('Clear'),
+              // Control buttons
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  // Clear button
+                  ElevatedButton.icon(
+                    onPressed: provider.isRecording ? null : provider.clearTranscript,
+                    icon: const Icon(Icons.clear),
+                    label: const Text('Clear'),
+                  ),
+
+                  // Record/Stop button
+                  ElevatedButton.icon(
+                    onPressed: provider.isRecording
+                        ? provider.stopRecording
+                        : provider.startRecording,
+                    icon: Icon(
+                      provider.isRecording ? Icons.stop : Icons.mic,
                     ),
-
-                    // Record/Stop button
-                    ElevatedButton.icon(
-                      onPressed: provider.isRecording
-                          ? provider.stopRecording
-                          : provider.startRecording,
-                      icon: Icon(
-                        provider.isRecording ? Icons.stop : Icons.mic,
-                      ),
-                      label: Text(
-                        provider.isRecording ? 'Stop' : 'Record',
-                      ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: provider.isRecording
-                            ? Colors.red
-                            : Colors.blue,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 24,
-                          vertical: 12,
-                        ),
+                    label: Text(
+                      provider.isRecording ? 'Stop' : 'Record',
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: provider.isRecording ? Colors.red : Colors.blue,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 24,
+                        vertical: 12,
                       ),
                     ),
-                  ],
-                ),
-              ],
-            ),
-          );
-        },
-      ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
