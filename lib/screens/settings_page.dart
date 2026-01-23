@@ -6,6 +6,7 @@ import 'dart:io' show Platform;
 import '../config/app_config.dart';
 import '../providers/shortcuts_provider.dart';
 import '../providers/auth_provider.dart';
+import '../providers/theme_provider.dart';
 import '../services/shortcuts_service.dart';
 import '../services/appearance_service.dart';
 import 'email_change_verification_dialog.dart';
@@ -1131,8 +1132,63 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
               secondary: const Icon(Icons.task_alt),
             ),
           ),
+          const SizedBox(height: 16),
+          Card(
+            child: Consumer<ThemeProvider>(
+              builder: (context, themeProvider, child) {
+                return ExpansionTile(
+                  leading: const Icon(Icons.palette),
+                  title: const Text('Theme'),
+                  subtitle: Text(_getThemeModeLabel(themeProvider.themeMode)),
+                  children: [
+                    RadioListTile<ThemeMode>(
+                      title: const Text('Light'),
+                      value: ThemeMode.light,
+                      groupValue: themeProvider.themeMode,
+                      onChanged: (value) {
+                        if (value != null) {
+                          themeProvider.setThemeMode(value, context: context);
+                        }
+                      },
+                    ),
+                    RadioListTile<ThemeMode>(
+                      title: const Text('Dark'),
+                      value: ThemeMode.dark,
+                      groupValue: themeProvider.themeMode,
+                      onChanged: (value) {
+                        if (value != null) {
+                          themeProvider.setThemeMode(value, context: context);
+                        }
+                      },
+                    ),
+                    RadioListTile<ThemeMode>(
+                      title: const Text('System'),
+                      value: ThemeMode.system,
+                      groupValue: themeProvider.themeMode,
+                      onChanged: (value) {
+                        if (value != null) {
+                          themeProvider.setThemeMode(value, context: context);
+                        }
+                      },
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
         ],
       ],
     );
+  }
+
+  String _getThemeModeLabel(ThemeMode mode) {
+    switch (mode) {
+      case ThemeMode.light:
+        return 'Light';
+      case ThemeMode.dark:
+        return 'Dark';
+      case ThemeMode.system:
+        return 'System';
+    }
   }
 }

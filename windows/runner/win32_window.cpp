@@ -3,8 +3,11 @@
 #include <dwmapi.h>
 #include <flutter_windows.h>
 #include <winuser.h>
+#include <uxtheme.h>
 
 #include "resource.h"
+
+#pragma comment(lib, "uxtheme.lib")
 
 namespace {
 
@@ -25,6 +28,18 @@ namespace {
 #endif
 #ifndef DWMSBT_MAINWINDOW
 #define DWMSBT_MAINWINDOW 2
+#endif
+
+/// Window attribute for caption color (Windows 11).
+/// DWMWA_CAPTION_COLOR = 35
+#ifndef DWMWA_CAPTION_COLOR
+#define DWMWA_CAPTION_COLOR 35
+#endif
+
+/// Window attribute for text color (Windows 11).
+/// DWMWA_TEXT_COLOR = 36
+#ifndef DWMWA_TEXT_COLOR
+#define DWMWA_TEXT_COLOR 36
 #endif
 
 /// Window display affinity for excluding from screen capture.
@@ -162,7 +177,8 @@ bool Win32Window::Create(const std::wstring& title,
     return false;
   }
 
-  UpdateTheme(window);
+  // Don't set theme on creation - let it be set after window is shown
+  // This prevents blinking during startup
   
   // Window display affinity (undetectable mode) is now controlled via settings
   // See AppearanceService and flutter_window.cpp method channel handler
@@ -254,7 +270,7 @@ Win32Window::MessageHandler(HWND hwnd,
       return 0;
 
     case WM_DWMCOLORIZATIONCOLORCHANGED:
-      UpdateTheme(hwnd);
+      UpdateTheme(hwnd, true); // Keep dark mode on colorization change
       return 0;
   }
 
@@ -314,27 +330,43 @@ void Win32Window::OnDestroy() {
   // No-op; provided for subclasses.
 }
 
-void Win32Window::UpdateTheme(HWND const window) {
-  // Force dark mode for title bar regardless of Windows settings
-  BOOL enable_dark_mode = TRUE;
+void Win32Window::UpdateTheme(HWND const window, bool isDark) {
+  // Disable backdrop blur completely - it interferes with title bar text/button colors
+  DWORD backdrop_type_none = 0;
+  DwmSetWindowAttribute(window, DWMWA_SYSTEMBACKDROP_TYPE,
+                        &backdrop_type_none, sizeof(backdrop_type_none));
+  
+  // Set title bar theme
+  BOOL enable_dark_mode = isDark ? TRUE : FALSE;
   DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE,
                         &enable_dark_mode, sizeof(enable_dark_mode));
   
-  // Enable backdrop blur effect (acrylic blur) for Windows 11
-  DWORD backdrop_type = DWMSBT_MAINWINDOW;
-  DwmSetWindowAttribute(window, DWMWA_SYSTEMBACKDROP_TYPE,
-                        &backdrop_type, sizeof(backdrop_type));
+  // Set explicit text and caption colors to ensure visibility
+  // For dark mode: white text on dark background
+  // For light mode: black text on light background
+  COLORREF text_color = isDark ? 0x00FFFFFF : 0x00000000; // White or Black
+  COLORREF caption_color = isDark ? 0x00000000 : 0x00FFFFFF; // Black or White background
   
-  // Original code (commented out - was reading from registry):
-  // DWORD light_mode;
-  // DWORD light_mode_size = sizeof(light_mode);
-  // LSTATUS result = RegGetValue(HKEY_CURRENT_USER, kGetPreferredBrightnessRegKey,
-  //                              kGetPreferredBrightnessRegValue,
-  //                              RRF_RT_REG_DWORD, nullptr, &light_mode,
-  //                              &light_mode_size);
-  // if (result == ERROR_SUCCESS) {
-  //   BOOL enable_dark_mode = light_mode == 0;
-  //   DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE,
-  //                         &enable_dark_mode, sizeof(enable_dark_mode));
-  // }
+  DwmSetWindowAttribute(window, DWMWA_TEXT_COLOR,
+                        &text_color, sizeof(text_color));
+  DwmSetWindowAttribute(window, DWMWA_CAPTION_COLOR,
+                        &caption_color, sizeof(caption_color));
+  
+  // Use SetWindowTheme for window controls
+  SetWindowTheme(window, isDark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+  
+  // Force complete window frame redraw without hiding/showing
+  // SWP_FRAMECHANGED is critical - it tells Windows to recalculate non-client area
+  SetWindowPos(window, nullptr, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE);
+  
+  // Force non-client area (title bar) redraw
+  InvalidateRect(window, nullptr, TRUE);
+  RedrawWindow(window, nullptr, nullptr,
+               RDW_FRAME | RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+  
+  // Send WM_NCPAINT to force title bar redraw
+  SendMessage(window, WM_NCPAINT, 1, 0);
+  
+  UpdateWindow(window);
 }

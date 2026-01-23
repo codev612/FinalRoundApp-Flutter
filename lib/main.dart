@@ -7,6 +7,7 @@ import 'providers/speech_to_text_provider.dart';
 import 'providers/meeting_provider.dart';
 import 'providers/shortcuts_provider.dart';
 import 'providers/auth_provider.dart';
+import 'providers/theme_provider.dart';
 import 'services/ai_service.dart';
 import 'services/appearance_service.dart';
 import 'config/app_config.dart';
@@ -48,6 +49,19 @@ void main() async {
       await AppearanceService.applySettings();
       await windowManager.show();
       await windowManager.focus();
+      
+      // Set initial title bar theme after window is shown to prevent blinking
+      // This will be called after ThemeProvider loads the saved theme
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        final prefs = await SharedPreferences.getInstance();
+        final themeModeIndex = prefs.getInt('theme_mode');
+        if (themeModeIndex != null) {
+          final themeMode = ThemeMode.values[themeModeIndex];
+          final isDark = themeMode == ThemeMode.dark || 
+                        (themeMode == ThemeMode.system);
+          await AppearanceService.setTitleBarTheme(isDark);
+        }
+      });
     });
   }
   
@@ -85,27 +99,46 @@ class MyApp extends StatelessWidget {
         ChangeNotifierProvider(
           create: (_) => ShortcutsProvider(),
         ),
+        ChangeNotifierProvider(
+          create: (_) => ThemeProvider(),
+        ),
       ],
-      child: MaterialApp(
-        title: 'HearNow',
-        theme: ThemeData(
-          colorScheme: ColorScheme.fromSeed(
-            seedColor: Colors.deepPurple,
-            brightness: Brightness.dark,
-          ),
-          useMaterial3: true,
-          scaffoldBackgroundColor: Colors.transparent,
-        ),
-        darkTheme: ThemeData(
-          colorScheme: ColorScheme.fromSeed(
-            seedColor: Colors.deepPurple,
-            brightness: Brightness.dark,
-          ),
-          useMaterial3: true,
-          scaffoldBackgroundColor: Colors.transparent,
-        ),
-        themeMode: ThemeMode.dark,
-        home: const AppShell(),
+      child: Consumer<ThemeProvider>(
+        builder: (context, themeProvider, child) {
+          // Update Windows title bar theme when theme changes
+          WidgetsBinding.instance.addPostFrameCallback((_) async {
+            if (Platform.isWindows) {
+              final brightness = themeProvider.themeMode == ThemeMode.light
+                  ? Brightness.light
+                  : (themeProvider.themeMode == ThemeMode.dark
+                      ? Brightness.dark
+                      : MediaQuery.platformBrightnessOf(context));
+              await AppearanceService.setTitleBarTheme(brightness == Brightness.dark);
+            }
+          });
+          
+          return MaterialApp(
+            title: 'HearNow',
+            theme: ThemeData(
+              colorScheme: ColorScheme.fromSeed(
+                seedColor: Colors.deepPurple,
+                brightness: Brightness.light,
+              ),
+              useMaterial3: true,
+              scaffoldBackgroundColor: Colors.transparent,
+            ),
+            darkTheme: ThemeData(
+              colorScheme: ColorScheme.fromSeed(
+                seedColor: Colors.deepPurple,
+                brightness: Brightness.dark,
+              ),
+              useMaterial3: true,
+              scaffoldBackgroundColor: Colors.transparent,
+            ),
+            themeMode: themeProvider.themeMode,
+            home: const AppShell(),
+          );
+        },
       ),
     );
   }

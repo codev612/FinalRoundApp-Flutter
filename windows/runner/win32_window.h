@@ -55,6 +55,9 @@ class Win32Window {
   // Return a RECT representing the bounds of the current client area.
   RECT GetClientArea();
 
+  // Update the window frame's theme (dark or light).
+  static void UpdateTheme(HWND const window, bool isDark = true);
+
  protected:
   // Processes and route salient window messages for mouse handling,
   // size change and DPI. Delegates handling of these to member overloads that
@@ -86,9 +89,6 @@ class Win32Window {
 
   // Retrieves a class instance pointer for |window|
   static Win32Window* GetThisFromHandle(HWND const window) noexcept;
-
-  // Update the window frame's theme to match the system theme.
-  static void UpdateTheme(HWND const window);
 
   bool quit_on_close_ = false;
 

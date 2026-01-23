@@ -9,6 +9,7 @@
 
 #include "flutter/generated_plugin_registrant.h"
 #include "audio_capture.h"
+#include "win32_window.h"
 
 #ifndef WDA_EXCLUDEFROMCAPTURE
 #define WDA_EXCLUDEFROMCAPTURE 0x00000011
@@ -119,6 +120,20 @@ bool FlutterWindow::OnCreate() {
             } else {
               SetWindowDisplayAffinity(hwnd, WDA_NONE);
             }
+            result->Success(flutter::EncodableValue(true));
+          } else {
+            result->Error("NO_WINDOW", "Window handle not available");
+          }
+        } else if (call.method_name().compare("setTitleBarTheme") == 0) {
+          bool isDark = true;
+          if (call.arguments()) {
+            if (std::holds_alternative<bool>(*call.arguments())) {
+              isDark = std::get<bool>(*call.arguments());
+            }
+          }
+          HWND hwnd = GetHandle();
+          if (hwnd) {
+            Win32Window::UpdateTheme(hwnd, isDark);
             result->Success(flutter::EncodableValue(true));
           } else {
             result->Error("NO_WINDOW", "Window handle not available");

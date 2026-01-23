@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 class AppearanceService {
   static const String _keyUndetectable = 'appearance_undetectable';
   static const String _keySkipTaskbar = 'appearance_skip_taskbar';
+  static const String _keyThemeMode = 'theme_mode';
   static const MethodChannel _channel = MethodChannel('com.hearnow/window');
 
   /// Load undetectable setting
@@ -45,6 +46,17 @@ class AppearanceService {
       } catch (e) {
         print('Error setting skip taskbar: $e');
       }
+    }
+  }
+
+  /// Set title bar theme (dark or light)
+  static Future<void> setTitleBarTheme(bool isDark) async {
+    if (!Platform.isWindows) return;
+    
+    try {
+      await _channel.invokeMethod('setTitleBarTheme', isDark);
+    } catch (e) {
+      print('Error setting title bar theme: $e');
     }
   }
 
