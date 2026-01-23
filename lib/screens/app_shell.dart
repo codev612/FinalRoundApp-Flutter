@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io' show Platform;
 
 import 'home_page.dart';
@@ -20,9 +21,40 @@ class AppShell extends StatefulWidget {
   State<AppShell> createState() => _AppShellState();
 }
 
-class _AppShellState extends State<AppShell> {
+class _AppShellState extends State<AppShell> with WindowListener {
   int _index = 0; // default to Home
   bool _wasAuthenticated = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (Platform.isWindows) {
+      windowManager.addListener(this);
+    }
+  }
+
+  @override
+  void dispose() {
+    if (Platform.isWindows) {
+      windowManager.removeListener(this);
+    }
+    super.dispose();
+  }
+
+  @override
+  void onWindowResize() async {
+    // Save window size when it's resized
+    if (Platform.isWindows) {
+      try {
+        final size = await windowManager.getSize();
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setDouble('window_width', size.width);
+        await prefs.setDouble('window_height', size.height);
+      } catch (e) {
+        // Ignore errors
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -137,7 +169,20 @@ class _AppShellState extends State<AppShell> {
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _index,
-        onTap: (i) => setState(() => _index = i),
+        onTap: (i) async {
+          // If clicking Meeting tab (index 1) and no current session, start a new meeting
+          if (i == 1) {
+            final meetingProvider = context.read<MeetingProvider>();
+            if (meetingProvider.currentSession == null) {
+              // Start a new meeting like the "Start Meeting" button
+              final speechProvider = context.read<SpeechToTextProvider>();
+              await meetingProvider.clearCurrentSession();
+              speechProvider.clearTranscript();
+              await meetingProvider.createNewSession();
+            }
+          }
+          setState(() => _index = i);
+        },
         backgroundColor: Theme.of(context).colorScheme.surface,
         selectedItemColor: Theme.of(context).colorScheme.primary,
         unselectedItemColor: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),

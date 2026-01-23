@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io' show Platform;
 import 'providers/speech_to_text_provider.dart';
 import 'providers/meeting_provider.dart';
@@ -18,8 +19,16 @@ void main() async {
   if (Platform.isWindows) {
     await windowManager.ensureInitialized();
     
-    WindowOptions windowOptions = const WindowOptions(
-      size: Size(1200, 800),
+    // Load saved window size or use default
+    final prefs = await SharedPreferences.getInstance();
+    final savedWidth = prefs.getDouble('window_width');
+    final savedHeight = prefs.getDouble('window_height');
+    final windowSize = savedWidth != null && savedHeight != null
+        ? Size(savedWidth, savedHeight)
+        : const Size(1200, 800);
+    
+    WindowOptions windowOptions = WindowOptions(
+      size: windowSize,
       backgroundColor: Colors.transparent,
       skipTaskbar: true,
       titleBarStyle: TitleBarStyle.normal,
@@ -29,6 +38,12 @@ void main() async {
     windowManager.waitUntilReadyToShow(windowOptions, () async {
       await windowManager.setBackgroundColor(Colors.transparent);
       await windowManager.setAlwaysOnTop(true);
+      // Set minimum window size
+      await windowManager.setMinimumSize(const Size(800, 600));
+      // Restore saved window size
+      if (savedWidth != null && savedHeight != null) {
+        await windowManager.setSize(windowSize);
+      }
       // Apply appearance settings (will load from SharedPreferences)
       await AppearanceService.applySettings();
       await windowManager.show();

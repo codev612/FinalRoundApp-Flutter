@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../providers/meeting_provider.dart';
 import '../providers/auth_provider.dart';
@@ -11,6 +12,7 @@ class _HoverableListTile extends StatefulWidget {
   final String Function(Duration) formatDuration;
   final VoidCallback? onLoadSession;
   final VoidCallback onStartMeeting;
+  final BuildContext? parentContext;
 
   const _HoverableListTile({
     required this.session,
@@ -19,6 +21,7 @@ class _HoverableListTile extends StatefulWidget {
     required this.formatDuration,
     this.onLoadSession,
     required this.onStartMeeting,
+    this.parentContext,
   });
 
   @override
@@ -27,6 +30,166 @@ class _HoverableListTile extends StatefulWidget {
 
 class _HoverableListTileState extends State<_HoverableListTile> {
   bool _isHovered = false;
+  bool _isMenuOpen = false;
+
+  Future<void> _showDeleteConfirmation() async {
+    if (!mounted) return;
+    
+    bool? confirmed;
+    try {
+      confirmed = await showDialog<bool>(
+        context: context,
+        barrierDismissible: true,
+        builder: (context) => AlertDialog(
+            title: Row(
+              children: [
+                Icon(
+                  Icons.warning_amber_rounded,
+                  color: Theme.of(context).colorScheme.error,
+                  size: 24,
+                ),
+                const SizedBox(width: 8),
+                const Text('Delete Session'),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Are you sure you want to delete this session?',
+                  style: Theme.of(context).textTheme.bodyLarge,
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surfaceVariant.withValues(alpha: 0.5),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.description,
+                        size: 16,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          widget.session.title,
+                          style: Theme.of(context).textTheme.bodyMedium,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'This action cannot be undone.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                style: FilledButton.styleFrom(
+                  backgroundColor: Theme.of(context).colorScheme.error,
+                  foregroundColor: Theme.of(context).colorScheme.onError,
+                ),
+                child: const Text('Delete'),
+              ),
+            ],
+          ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error showing dialog: $e'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+      return;
+    }
+    
+    if (confirmed == true && mounted) {
+      // Show SnackBar immediately using current context (before deletion)
+      // This ensures the context is still valid
+      final scaffoldContext = widget.parentContext ?? context;
+      try {
+        ScaffoldMessenger.of(scaffoldContext).showSnackBar(
+          SnackBar(
+            content: const Row(
+              children: [
+                Icon(Icons.check_circle, color: Colors.white),
+                SizedBox(width: 8),
+                Text('Session deleted successfully'),
+              ],
+            ),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      } catch (e) {
+        // If showing immediately fails, try after a delay
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          try {
+            ScaffoldMessenger.of(scaffoldContext).showSnackBar(
+              SnackBar(
+                content: const Row(
+                  children: [
+                    Icon(Icons.check_circle, color: Colors.white),
+                    SizedBox(width: 8),
+                    Text('Session deleted successfully'),
+                  ],
+                ),
+                backgroundColor: Colors.green,
+                behavior: SnackBarBehavior.floating,
+                duration: const Duration(seconds: 3),
+              ),
+            );
+          } catch (_) {
+            // Ignore if still fails
+          }
+        });
+      }
+      
+      try {
+        await widget.provider.deleteSession(widget.session.id);
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Row(
+                children: [
+                  const Icon(Icons.error, color: Colors.white),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text('Failed to delete session: $e'),
+                  ),
+                ],
+              ),
+              backgroundColor: Theme.of(context).colorScheme.error,
+              behavior: SnackBarBehavior.floating,
+              duration: const Duration(seconds: 4),
+            ),
+          );
+        }
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -35,25 +198,67 @@ class _HoverableListTileState extends State<_HoverableListTile> {
       onEnter: (_) => setState(() => _isHovered = true),
       onExit: (_) => setState(() => _isHovered = false),
       child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 2),
         decoration: BoxDecoration(
           color: _isHovered
-              ? Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3)
-              : Colors.transparent,
-          borderRadius: BorderRadius.circular(8),
+              ? Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.5)
+              : Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: _isHovered
+                ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.3)
+                : Theme.of(context).colorScheme.outline.withValues(alpha: 0.1),
+            width: 1,
+          ),
+          boxShadow: _isHovered
+              ? [
+                  BoxShadow(
+                    color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.1),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+                ]
+              : [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.05),
+                    blurRadius: 4,
+                    offset: const Offset(0, 1),
+                  ),
+                ],
         ),
         child: ListTile(
-          title: Text(widget.session.title),
-          subtitle: Row(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+          title: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Icon(
-                Icons.access_time,
-                size: 14,
-                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+              Expanded(
+                child: Text(
+                  widget.session.title,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: Theme.of(context).colorScheme.onSurface,
+                      ),
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
-              const SizedBox(width: 4),
-              Text(
-                '${widget.formatTime(widget.session.createdAt)} • ${widget.formatDuration(widget.session.duration)}',
-                style: Theme.of(context).textTheme.bodySmall,
+              const SizedBox(width: 12),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.access_time,
+                    size: 16,
+                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    '${widget.formatTime(widget.session.createdAt)} • ${widget.formatDuration(widget.session.duration)}',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                        ),
+                  ),
+                ],
               ),
             ],
           ),
@@ -67,6 +272,169 @@ class _HoverableListTileState extends State<_HoverableListTile> {
                     label: Text('${widget.session.bubbles.length}'),
                     materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     visualDensity: VisualDensity.compact,
+                  ),
+                ),
+              // Menu button (only visible on hover or when menu is open)
+              if (_isHovered || _isMenuOpen)
+                Padding(
+                  padding: const EdgeInsets.only(right: 4),
+                  child: PopupMenuButton<String>(
+                    icon: Icon(
+                      Icons.more_vert,
+                      size: 20,
+                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                    ),
+                    onOpened: () {
+                      setState(() {
+                        _isMenuOpen = true;
+                      });
+                    },
+                    onCanceled: () {
+                      setState(() {
+                        _isMenuOpen = false;
+                      });
+                    },
+                    onSelected: (value) {
+                      setState(() {
+                        _isMenuOpen = false;
+                      });
+                      
+                      if (value == 'delete') {
+                        if (mounted) {
+                          _showDeleteConfirmation();
+                        }
+                      } else if (value == 'copy_link') {
+                        // Copy session ID as link (could be enhanced to include full URL)
+                        final link = widget.session.id;
+                        Clipboard.setData(ClipboardData(text: link));
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Session link copied to clipboard')),
+                          );
+                        }
+                      } else if (value == 'regenerate') {
+                        // Load session first, then regenerate summary, insights, and questions
+                        (() async {
+                          try {
+                            // Show loading message
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Row(
+                                    children: [
+                                      SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: CircularProgressIndicator(strokeWidth: 2),
+                                      ),
+                                      SizedBox(width: 12),
+                                      Text('Regenerating AI content...'),
+                                    ],
+                                  ),
+                                  duration: Duration(seconds: 30),
+                                ),
+                              );
+                            }
+                            
+                            // Load the session
+                            await widget.provider.loadSession(widget.session.id);
+                            final session = widget.provider.currentSession;
+                            
+                            if (session != null && session.bubbles.isNotEmpty) {
+                              // Regenerate summary, insights, and questions
+                              await widget.provider.generateSummary(regenerate: true);
+                              await widget.provider.generateInsights(regenerate: true);
+                              await widget.provider.generateQuestions(regenerate: true);
+                              
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Row(
+                                      children: [
+                                        Icon(Icons.check_circle, color: Colors.white, size: 20),
+                                        SizedBox(width: 8),
+                                        Text('Summary, insights, and questions regenerated successfully'),
+                                      ],
+                                    ),
+                                    backgroundColor: Colors.green,
+                                    duration: Duration(seconds: 3),
+                                  ),
+                                );
+                              }
+                            } else {
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('No transcript available to regenerate'),
+                                    duration: Duration(seconds: 2),
+                                  ),
+                                );
+                              }
+                            }
+                          } catch (e) {
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Row(
+                                    children: [
+                                      const Icon(Icons.error, color: Colors.white, size: 20),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text('Error regenerating: $e'),
+                                      ),
+                                    ],
+                                  ),
+                                  backgroundColor: Theme.of(context).colorScheme.error,
+                                  duration: const Duration(seconds: 4),
+                                ),
+                              );
+                            }
+                          }
+                        })();
+                      }
+                    },
+                    itemBuilder: (context) => [
+                      const PopupMenuItem(
+                        value: 'copy_link',
+                        child: Row(
+                          children: [
+                            Icon(Icons.link, size: 20),
+                            SizedBox(width: 8),
+                            Text('Copy Link'),
+                          ],
+                        ),
+                      ),
+                      const PopupMenuItem(
+                        value: 'regenerate',
+                        child: Row(
+                          children: [
+                            Icon(Icons.refresh, size: 20),
+                            SizedBox(width: 8),
+                            Text('Regenerate'),
+                          ],
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'delete',
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.delete_outline,
+                              size: 20,
+                              color: Colors.red,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Delete',
+                              style: TextStyle(color: Colors.red),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               Icon(
@@ -262,6 +630,7 @@ class _HomePageState extends State<HomePage> {
                   formatDuration: _formatDuration,
                   onLoadSession: widget.onLoadSession,
                   onStartMeeting: widget.onStartMeeting,
+                  parentContext: context,
                 );
               }),
               if (dateIndex < dateKeys.length - 1)
