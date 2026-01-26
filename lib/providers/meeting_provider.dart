@@ -125,24 +125,24 @@ class MeetingProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> createNewSession({String? title, MeetingMode? mode}) async {
+  Future<void> createNewSession({String? title, String? modeKey}) async {
     final sessionId = DateTime.now().millisecondsSinceEpoch.toString();
     _currentSession = MeetingSession(
       id: sessionId,
       title: title ?? 'Meeting ${DateTime.now().toLocal().toString().substring(0, 16)}',
       createdAt: DateTime.now(),
       bubbles: [],
-      mode: mode ?? MeetingMode.general,
+      modeKey: modeKey ?? 'general',
     );
     await _saveCurrentSessionId(sessionId);
     notifyListeners();
   }
 
-  Future<void> updateCurrentSessionMode(MeetingMode mode) async {
+  Future<void> updateCurrentSessionModeKey(String modeKey) async {
     if (_currentSession == null) return;
     
     _currentSession = _currentSession!.copyWith(
-      mode: mode,
+      modeKey: modeKey,
       updatedAt: DateTime.now(),
     );
     notifyListeners();

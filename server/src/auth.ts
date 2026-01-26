@@ -49,6 +49,9 @@ export const authenticate = (req: AuthRequest, res: Response, next: NextFunction
     const authHeader = req.headers.authorization;
     
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      if (req.method === 'DELETE' && req.path?.includes('custom-mode-configs')) {
+        console.log('[RemoveMode] Auth 401: No token provided', { method: req.method, path: req.path });
+      }
       res.status(401).json({ error: 'No token provided' });
       return;
     }
@@ -57,6 +60,9 @@ export const authenticate = (req: AuthRequest, res: Response, next: NextFunction
     const decoded = verifyToken(token);
 
     if (!decoded) {
+      if (req.method === 'DELETE' && req.path?.includes('custom-mode-configs')) {
+        console.log('[RemoveMode] Auth 401: Invalid or expired token', { method: req.method, path: req.path });
+      }
       res.status(401).json({ error: 'Invalid or expired token' });
       return;
     }
@@ -64,6 +70,9 @@ export const authenticate = (req: AuthRequest, res: Response, next: NextFunction
     req.user = decoded;
     next();
   } catch (error) {
+    if (req.method === 'DELETE' && req.path?.includes('custom-mode-configs')) {
+      console.log('[RemoveMode] Auth 401: Exception', error);
+    }
     res.status(401).json({ error: 'Authentication failed' });
   }
 };

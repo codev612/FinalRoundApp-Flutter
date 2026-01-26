@@ -650,10 +650,10 @@ class _HomePageState extends State<HomePage> {
         final grouped = _groupSessionsByDate(sessions);
         final dateKeys = _getSortedDateKeys(grouped);
 
-        return Padding(
+    return Padding(
           padding: const EdgeInsets.symmetric(horizontal: 64),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               // Header with title and start button
               Padding(
@@ -664,16 +664,16 @@ class _HomePageState extends State<HomePage> {
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'HearNow',
-                          style: Theme.of(context).textTheme.headlineMedium,
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Meeting assistant with separate mic + system transcripts.',
-                          style: Theme.of(context).textTheme.bodyLarge,
-                        ),
+        children: [
+          Text(
+            'HearNow',
+            style: Theme.of(context).textTheme.headlineMedium,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Meeting assistant with separate mic + system transcripts.',
+            style: Theme.of(context).textTheme.bodyLarge,
+          ),
                       ],
                     ),
                   ),
@@ -729,7 +729,7 @@ class _HomePageState extends State<HomePage> {
                                 style: Theme.of(context).textTheme.titleMedium,
                               ),
                               const SizedBox(height: 8),
-                              Text(
+          Text(
                                 'Start a meeting to see it here',
                                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                                       color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
@@ -739,9 +739,9 @@ class _HomePageState extends State<HomePage> {
                           ),
                         )
                       : _buildSessionsList(grouped, dateKeys, provider),
-            ),
-          ],
           ),
+        ],
+      ),
         );
       },
     );

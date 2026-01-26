@@ -10,7 +10,8 @@ class MeetingSession {
   final String? summary;
   final String? insights;
   final String? questions;
-  final MeetingMode mode;
+  /// Mode key: built-in enum name (e.g. "general") or "custom:{id}" for custom modes.
+  final String modeKey;
   final Map<String, dynamic> metadata;
 
   MeetingSession({
@@ -22,9 +23,17 @@ class MeetingSession {
     this.summary,
     this.insights,
     this.questions,
-    this.mode = MeetingMode.general,
+    this.modeKey = 'general',
     this.metadata = const {},
   });
+
+  /// Built-in mode when [modeKey] is an enum name; null when custom.
+  MeetingMode? get modeOrNull {
+    if (modeKey.startsWith('custom:')) return null;
+    return MeetingMode.fromString(modeKey);
+  }
+
+  MeetingMode get mode => modeOrNull ?? MeetingMode.general;
 
   MeetingSession copyWith({
     String? id,
@@ -35,7 +44,7 @@ class MeetingSession {
     String? summary,
     String? insights,
     String? questions,
-    MeetingMode? mode,
+    String? modeKey,
     Map<String, dynamic>? metadata,
   }) {
     return MeetingSession(
@@ -47,7 +56,7 @@ class MeetingSession {
       summary: summary ?? this.summary,
       insights: insights ?? this.insights,
       questions: questions ?? this.questions,
-      mode: mode ?? this.mode,
+      modeKey: modeKey ?? this.modeKey,
       metadata: metadata ?? this.metadata,
     );
   }
@@ -67,7 +76,7 @@ class MeetingSession {
       'summary': summary,
       'insights': insights,
       'questions': questions,
-      'mode': mode.name,
+      'mode': modeKey,
       'metadata': metadata,
     };
   }
@@ -111,7 +120,7 @@ class MeetingSession {
       summary: json['summary'] as String?,
       insights: json['insights'] as String?,
       questions: json['questions'] as String?,
-      mode: MeetingMode.fromString(json['mode'] as String?),
+      modeKey: (json['mode'] as String?) ?? (json['modeKey'] as String?) ?? 'general',
       metadata: json['metadata'] as Map<String, dynamic>? ?? {},
     );
   }

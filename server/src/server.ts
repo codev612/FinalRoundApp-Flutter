@@ -17,6 +17,11 @@ import {
   updateMeetingSession,
   listMeetingSessions,
   deleteMeetingSession,
+  getModeConfigs,
+  saveModeConfig,
+  getCustomModes,
+  saveCustomModes,
+  deleteCustomMode,
   MeetingSession,
 } from './database.js';
 import { fileURLToPath } from 'url';
@@ -219,6 +224,93 @@ app.delete('/api/sessions/:id', authenticate, async (req: AuthRequest, res: Resp
   } catch (error: any) {
     console.error('Error deleting session:', error);
     res.status(500).json({ error: error.message || 'Failed to delete session' });
+  }
+});
+
+// Mode configs API (built-in modes: realTimePrompt, notesTemplate per mode)
+app.get('/api/mode-configs', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const configs = await getModeConfigs(userId);
+    if (!configs) {
+      return res.status(404).json({ error: 'No mode configs stored yet' });
+    }
+    res.json(configs);
+  } catch (error: any) {
+    console.error('Error getting mode configs:', error);
+    res.status(500).json({ error: error.message || 'Failed to get mode configs' });
+  }
+});
+
+app.put('/api/mode-configs/:modeName', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const modeName = req.params.modeName;
+    const { realTimePrompt, notesTemplate } = req.body ?? {};
+    if (!modeName) {
+      return res.status(400).json({ error: 'Missing mode name' });
+    }
+    const config = {
+      realTimePrompt: typeof realTimePrompt === 'string' ? realTimePrompt : '',
+      notesTemplate: typeof notesTemplate === 'string' ? notesTemplate : '',
+    };
+    await saveModeConfig(userId, modeName, config);
+    res.status(200).json({ mode: modeName, ...config });
+  } catch (error: any) {
+    console.error('Error saving mode config:', error);
+    res.status(500).json({ error: error.message || 'Failed to save mode config' });
+  }
+});
+
+// Custom modes (add from template, add custom)
+app.get('/api/custom-mode-configs', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const modes = await getCustomModes(userId);
+    res.json(modes);
+  } catch (error: any) {
+    console.error('Error getting custom modes:', error);
+    res.status(500).json({ error: error.message || 'Failed to get custom modes' });
+  }
+});
+
+app.put('/api/custom-mode-configs', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const body = req.body;
+    if (!Array.isArray(body)) {
+      return res.status(400).json({ error: 'Body must be an array of custom modes' });
+    }
+    const modes = body.map((m: any) => ({
+      id: String(m?.id ?? ''),
+      label: String(m?.label ?? ''),
+      iconCodePoint: Number(m?.iconCodePoint) || 0x2605,
+      realTimePrompt: String(m?.realTimePrompt ?? ''),
+      notesTemplate: String(m?.notesTemplate ?? ''),
+    }));
+    await saveCustomModes(userId, modes);
+    res.status(200).json(modes);
+  } catch (error: any) {
+    console.error('Error saving custom modes:', error);
+    res.status(500).json({ error: error.message || 'Failed to save custom modes' });
+  }
+});
+
+app.delete('/api/custom-mode-configs/:id', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const modeId = req.params.id;
+    console.log('[RemoveMode] DELETE /api/custom-mode-configs/:id hit', { userId, modeId });
+    if (!modeId) {
+      console.log('[RemoveMode] 400 mode id missing');
+      return res.status(400).json({ error: 'Mode id is required' });
+    }
+    await deleteCustomMode(userId, modeId);
+    console.log('[RemoveMode] deleteCustomMode(userId, modeId) completed');
+    res.status(200).json({ ok: true });
+  } catch (error: any) {
+    console.error('[RemoveMode] Error deleting custom mode:', error);
+    res.status(500).json({ error: error.message || 'Failed to delete custom mode' });
   }
 });
 

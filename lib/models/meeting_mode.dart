@@ -8,6 +8,7 @@ enum MeetingMode {
   lecture('Lecture', Icons.school),
   meeting('Meeting', Icons.groups),
   call('Call', Icons.phone),
+  brainstorm('Brainstorm', Icons.lightbulb_outline),
   other('Other', Icons.more_horiz);
 
   final String label;

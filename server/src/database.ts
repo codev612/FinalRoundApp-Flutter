@@ -78,10 +78,40 @@ export interface MeetingSession {
   metadata?: Record<string, any>;
 }
 
+// Mode config per built-in mode (keyed by mode name, e.g. 'general', 'meeting')
+export interface ModeConfigEntry {
+  realTimePrompt: string;
+  notesTemplate: string;
+}
+
+// One document per user storing all built-in mode configs
+export interface ModeConfigsDoc {
+  _id?: ObjectId;
+  userId: string;
+  configs: Record<string, ModeConfigEntry>;
+}
+
+// User-created modes (from "add from template" or "add custom")
+export interface CustomModeEntry {
+  id: string;
+  label: string;
+  iconCodePoint: number;
+  realTimePrompt: string;
+  notesTemplate: string;
+}
+
+export interface CustomModesDoc {
+  _id?: ObjectId;
+  userId: string;
+  modes: CustomModeEntry[];
+}
+
 let client: MongoClient | null = null;
 let db: Db | null = null;
 let usersCollection: Collection<User> | null = null;
 let sessionsCollection: Collection<MeetingSession> | null = null;
+let modeConfigsCollection: Collection<ModeConfigsDoc> | null = null;
+let customModesCollection: Collection<CustomModesDoc> | null = null;
 
 // Initialize MongoDB connection
 export const connectDB = async (): Promise<void> => {
@@ -119,6 +149,16 @@ export const connectDB = async (): Promise<void> => {
       await sessionsCollection.createIndex({ createdAt: -1 });
       await sessionsCollection.createIndex({ updatedAt: -1 });
     }
+
+    if (!modeConfigsCollection) {
+      modeConfigsCollection = db.collection<ModeConfigsDoc>('mode_configs');
+      await modeConfigsCollection.createIndex({ userId: 1 }, { unique: true });
+    }
+
+    if (!customModesCollection) {
+      customModesCollection = db.collection<CustomModesDoc>('custom_modes');
+      await customModesCollection.createIndex({ userId: 1 }, { unique: true });
+    }
   } catch (error) {
     console.error('MongoDB connection error:', error);
     throw error;
@@ -139,6 +179,20 @@ export const getSessionsCollection = (): Collection<MeetingSession> => {
     throw new Error('Database not connected. Call connectDB() first.');
   }
   return sessionsCollection;
+};
+
+const getModeConfigsCollection = (): Collection<ModeConfigsDoc> => {
+  if (!modeConfigsCollection) {
+    throw new Error('Database not connected. Call connectDB() first.');
+  }
+  return modeConfigsCollection;
+};
+
+const getCustomModesCollection = (): Collection<CustomModesDoc> => {
+  if (!customModesCollection) {
+    throw new Error('Database not connected. Call connectDB() first.');
+  }
+  return customModesCollection;
 };
 
 // Helper function to convert MongoDB user to API format
@@ -604,6 +658,71 @@ export const deleteMeetingSession = async (sessionId: string, userId: string): P
   return result.deletedCount > 0;
 };
 
+// Mode configs (built-in modes: realTimePrompt, notesTemplate per mode name)
+export const getModeConfigs = async (userId: string): Promise<Record<string, ModeConfigEntry> | null> => {
+  const collection = getModeConfigsCollection();
+  const doc = await collection.findOne({ userId });
+  if (!doc || !doc.configs || Object.keys(doc.configs).length === 0) {
+    return null;
+  }
+  return doc.configs;
+};
+
+export const saveModeConfig = async (
+  userId: string,
+  modeName: string,
+  config: ModeConfigEntry
+): Promise<void> => {
+  const collection = getModeConfigsCollection();
+  await collection.updateOne(
+    { userId },
+    { $set: { [`configs.${modeName}`]: config } },
+    { upsert: true }
+  );
+};
+
+// Custom modes (user-created, e.g. from templates)
+export const getCustomModes = async (userId: string): Promise<CustomModeEntry[]> => {
+  const collection = getCustomModesCollection();
+  const doc = await collection.findOne({ userId });
+  return doc?.modes ?? [];
+};
+
+export const saveCustomModes = async (userId: string, modes: CustomModeEntry[]): Promise<void> => {
+  const collection = getCustomModesCollection();
+  await collection.updateOne(
+    { userId },
+    { $set: { modes } },
+    { upsert: true }
+  );
+};
+
+export const deleteCustomMode = async (userId: string, modeId: string): Promise<void> => {
+  const collection = getCustomModesCollection();
+  const doc = await collection.findOne({ userId });
+  const modes = doc?.modes ?? [];
+  console.log('[RemoveMode] db deleteCustomMode', { userId, modeId, beforeCount: modes.length, modeIds: modes.map((m: CustomModeEntry) => m.id) });
+  const next = modes.filter((m) => String(m.id) !== String(modeId));
+  const removed = modes.length - next.length;
+  console.log('[RemoveMode] db after filter', { nextCount: next.length, removed });
+  const result = await collection.updateOne(
+    { userId },
+    { $set: { modes: next } },
+    { upsert: true }
+  );
+  console.log('[RemoveMode] db updateOne result', {
+    acknowledged: result.acknowledged,
+    matchedCount: result.matchedCount,
+    modifiedCount: result.modifiedCount,
+    upsertedCount: result.upsertedCount,
+    upsertedId: result.upsertedId?.toString(),
+    collection: collection.collectionName,
+  });
+  const docAfter = await collection.findOne({ userId });
+  const modesAfter = docAfter?.modes ?? [];
+  console.log('[RemoveMode] db read-after-write', { count: modesAfter.length, modeIds: modesAfter.map((m: CustomModeEntry) => m.id), stillHasDeletedId: modesAfter.some((m: CustomModeEntry) => String(m.id) === String(modeId)) });
+};
+
 // Close database connection
 export const closeDB = async (): Promise<void> => {
   if (client) {
@@ -612,6 +731,8 @@ export const closeDB = async (): Promise<void> => {
     db = null;
     usersCollection = null;
     sessionsCollection = null;
+    modeConfigsCollection = null;
+    customModesCollection = null;
     console.log('MongoDB connection closed');
   }
 };

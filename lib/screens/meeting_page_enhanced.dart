@@ -10,6 +10,7 @@ import '../models/meeting_session.dart';
 import '../models/meeting_mode.dart';
 import '../models/transcript_bubble.dart';
 import '../services/meeting_question_service.dart';
+import '../services/meeting_mode_service.dart';
 import '../services/ai_service.dart';
 import '../providers/shortcuts_provider.dart';
 import 'manage_mode_page.dart';
@@ -43,6 +44,8 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
   bool _showConversationPanel = true;
   bool _showAiPanel = true;
   bool _isUpdatingBubbles = false; // Flag to prevent infinite loops
+  MeetingModeService? _modeService;
+  Future<List<ModeDisplay>>? _modeDisplaysFuture;
 
   @override
   void initState() {
@@ -1730,113 +1733,129 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                                 ),
                               ),
                               const SizedBox(width: 12),
-                              // Mode selector dropdown
+                              // Mode selector dropdown (built-in + custom modes)
                               Consumer<MeetingProvider>(
                                 builder: (context, meetingProvider, child) {
-                                  final currentMode = session?.mode ?? MeetingMode.general;
+                                  final currentKey = session?.modeKey ?? 'general';
                                   final navigatorContext = context;
-                                  return Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                    decoration: BoxDecoration(
-                                      color: Colors.white.withValues(alpha: 0.1),
-                                      borderRadius: BorderRadius.circular(8),
-                                      border: Border.all(
-                                        color: Colors.white.withValues(alpha: 0.3),
-                                        width: 1,
+                                  if (_modeDisplaysFuture == null) {
+                                    final auth = context.read<AuthProvider>().token;
+                                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                                      if (!mounted) return;
+                                      final svc = MeetingModeService();
+                                      svc.setAuthToken(auth);
+                                      setState(() {
+                                        _modeService = svc;
+                                        _modeDisplaysFuture = svc.getModeDisplays();
+                                      });
+                                    });
+                                    return Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                      decoration: BoxDecoration(
+                                        color: Colors.white.withValues(alpha: 0.1),
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(color: Colors.white.withValues(alpha: 0.3), width: 1),
                                       ),
-                                    ),
-                                    child: PopupMenuButton<MeetingMode?>(
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Text(
-                                            currentMode.label,
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 14,
-                                              fontWeight: FontWeight.w500,
-                                              shadows: [
-                                                Shadow(color: Colors.black, blurRadius: 4, offset: Offset(1, 1)),
-                                              ],
-                                            ),
+                                      child: const SizedBox(width: 100, height: 32, child: Center(child: CircularProgressIndicator(strokeWidth: 2))),
+                                    );
+                                  }
+                                  return FutureBuilder<List<ModeDisplay>>(
+                                    future: _modeDisplaysFuture,
+                                    builder: (context, snap) {
+                                      if (!snap.hasData) {
+                                        return Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                          decoration: BoxDecoration(
+                                            color: Colors.white.withValues(alpha: 0.1),
+                                            borderRadius: BorderRadius.circular(8),
+                                            border: Border.all(color: Colors.white.withValues(alpha: 0.3), width: 1),
                                           ),
-                                          const SizedBox(width: 4),
-                                          const Icon(
-                                            Icons.arrow_drop_down,
-                                            color: Colors.white,
-                                            size: 20,
-                                          ),
-                                        ],
-                                      ),
-                                      color: Colors.grey.shade900,
-                                      itemBuilder: (BuildContext menuContext) {
-                                        final items = <PopupMenuEntry<MeetingMode?>>[];
-                                        
-                                        // Add mode items
-                                        for (final mode in MeetingMode.values) {
-                                          items.add(
-                                            PopupMenuItem<MeetingMode?>(
-                                              value: mode,
-                                              child: Row(
-                                                mainAxisSize: MainAxisSize.min,
-                                                children: [
-                                                  Icon(mode.icon, size: 18, color: Colors.white),
-                                                  const SizedBox(width: 8),
-                                                  Text(
-                                                    mode.label,
-                                                    style: const TextStyle(color: Colors.white),
-                                                  ),
-                                                  if (mode == currentMode) ...[
-                                                    const Spacer(),
-                                                    const Icon(Icons.check, color: Colors.white, size: 18),
-                                                  ],
-                                                ],
-                                              ),
-                                            ),
-                                          );
-                                        }
-                                        
-                                        // Add divider
-                                        items.add(const PopupMenuDivider());
-                                        
-                                        // Add manage mode item with onTap handler
-                                        items.add(
-                                          PopupMenuItem<MeetingMode?>(
-                                            enabled: false,
-                                            child: InkWell(
-                                              onTap: () {
-                                                Navigator.pop(menuContext); // Close the menu first
-                                                Navigator.push(
-                                                  navigatorContext,
-                                                  MaterialPageRoute(
-                                                    builder: (context) => const ManageModePage(),
-                                                  ),
-                                                );
-                                              },
-                                              child: const Row(
-                                                mainAxisSize: MainAxisSize.min,
-                                                children: [
-                                                  Icon(Icons.settings, size: 18, color: Colors.white),
-                                                  SizedBox(width: 8),
-                                                  Text(
-                                                    'Manage mode',
-                                                    style: TextStyle(color: Colors.white),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                          ),
+                                          child: const SizedBox(width: 100, height: 32, child: Center(child: CircularProgressIndicator(strokeWidth: 2))),
                                         );
-                                        
-                                        return items;
-                                      },
-                                      onSelected: (MeetingMode? selected) {
-                                        if (selected != null && meetingProvider.currentSession != null) {
-                                          // Regular mode selected
-                                          meetingProvider.updateCurrentSessionMode(selected);
-                                        }
-                                      },
-                                    ),
+                                      }
+                                      final displays = snap.data!;
+                                      final currentLabel = displays.where((d) => d.modeKey == currentKey).isEmpty
+                                          ? 'General'
+                                          : displays.firstWhere((d) => d.modeKey == currentKey).label;
+                                      return Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                        decoration: BoxDecoration(
+                                          color: Colors.white.withValues(alpha: 0.1),
+                                          borderRadius: BorderRadius.circular(8),
+                                          border: Border.all(color: Colors.white.withValues(alpha: 0.3), width: 1),
+                                        ),
+                                        child: PopupMenuButton<String?>(
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Text(
+                                                currentLabel,
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 14,
+                                                  fontWeight: FontWeight.w500,
+                                                  shadows: [Shadow(color: Colors.black, blurRadius: 4, offset: Offset(1, 1))],
+                                                ),
+                                              ),
+                                              const SizedBox(width: 4),
+                                              const Icon(Icons.arrow_drop_down, color: Colors.white, size: 20),
+                                            ],
+                                          ),
+                                          color: Colors.grey.shade900,
+                                          itemBuilder: (BuildContext menuContext) {
+                                            final items = <PopupMenuEntry<String?>>[];
+                                            for (final d in displays) {
+                                              items.add(
+                                                PopupMenuItem<String?>(
+                                                  value: d.modeKey,
+                                                  child: Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      Icon(d.icon, size: 18, color: Colors.white),
+                                                      const SizedBox(width: 8),
+                                                      Text(d.label, style: const TextStyle(color: Colors.white)),
+                                                      if (d.modeKey == currentKey) ...[
+                                                        const Spacer(),
+                                                        const Icon(Icons.check, color: Colors.white, size: 18),
+                                                      ],
+                                                    ],
+                                                  ),
+                                                ),
+                                              );
+                                            }
+                                            items.add(const PopupMenuDivider());
+                                            items.add(
+                                              PopupMenuItem<String?>(
+                                                enabled: false,
+                                                child: InkWell(
+                                                  onTap: () {
+                                                    Navigator.pop(menuContext);
+                                                    Navigator.push(
+                                                      navigatorContext,
+                                                      MaterialPageRoute(builder: (context) => const ManageModePage()),
+                                                    );
+                                                  },
+                                                  child: const Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      Icon(Icons.settings, size: 18, color: Colors.white),
+                                                      SizedBox(width: 8),
+                                                      Text('Manage mode', style: TextStyle(color: Colors.white)),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
+                                            );
+                                            return items;
+                                          },
+                                          onSelected: (String? selectedKey) {
+                                            if (selectedKey != null && meetingProvider.currentSession != null) {
+                                              meetingProvider.updateCurrentSessionModeKey(selectedKey);
+                                            }
+                                          },
+                                        ),
+                                      );
+                                    },
                                   );
                                 },
                               ),

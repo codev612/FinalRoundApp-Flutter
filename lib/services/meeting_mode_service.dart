@@ -1,8 +1,19 @@
 import 'dart:convert';
+import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/meeting_mode.dart';
+import '../models/custom_meeting_mode.dart';
 import '../config/app_config.dart';
+
+/// Display info for mode dropdown / list. [modeKey] is enum name or "custom:{id}".
+class ModeDisplay {
+  final String modeKey;
+  final String label;
+  final IconData icon;
+
+  const ModeDisplay({required this.modeKey, required this.label, required this.icon});
+}
 
 class MeetingModeConfig {
   final MeetingMode mode;
@@ -45,6 +56,12 @@ class MeetingModeConfig {
 
 class MeetingModeService {
   static const String _configsKey = 'meeting_mode_configs';
+  static const String _customModesKey = 'meeting_custom_modes';
+  static const String _customPrefix = 'custom:';
+
+  static bool isCustomModeKey(String key) => key.startsWith(_customPrefix);
+  static String customModeKey(String id) => '$_customPrefix$id';
+
   String? _authToken;
   
   String? get authToken => _authToken;
@@ -82,28 +99,27 @@ class MeetingModeService {
 
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body) as Map<String, dynamic>;
-          final configs = <MeetingMode, MeetingModeConfig>{};
-          
+          // Start from cache so local notes templates persist when API has no/partial data
+          final configs = await _loadCachedConfigs();
           for (final mode in MeetingMode.values) {
             if (data.containsKey(mode.name)) {
               final configData = data[mode.name] as Map<String, dynamic>;
-              configs[mode] = MeetingModeConfig.fromJson({
+              var cfg = MeetingModeConfig.fromJson({
                 'mode': mode.name,
                 ...configData,
               });
-            } else {
-              configs[mode] = getDefaultConfig(mode);
+              if (cfg.notesTemplate == _legacyDefaultNotesTemplate) {
+                cfg = cfg.copyWith(notesTemplate: defaultNotesTemplate);
+              }
+              configs[mode] = cfg;
             }
+            // else keep configs[mode] from cache
           }
-          
-          // Cache in SharedPreferences
           await _cacheConfigs(configs);
           return configs;
         } else if (response.statusCode == 404) {
-          // No configs in DB yet, use defaults and cache them
-          final defaults = _getDefaultConfigs();
-          await _cacheConfigs(defaults);
-          return defaults;
+          // No configs in DB yet — keep local cache so notes templates etc. persist after restart
+          return await _loadCachedConfigs();
         }
       } catch (e) {
         // Fall through to local cache/defaults
@@ -153,6 +169,170 @@ class MeetingModeService {
     return configs[mode] ?? getDefaultConfig(mode);
   }
 
+  /// All modes for dropdown: built-in + custom. [modeKey] is enum name or "custom:id".
+  Future<List<ModeDisplay>> getModeDisplays() async {
+    final list = <ModeDisplay>[];
+    for (final m in MeetingMode.values) {
+      list.add(ModeDisplay(modeKey: m.name, label: m.label, icon: m.icon));
+    }
+    final custom = await getCustomModes();
+    for (final c in custom) {
+      list.add(ModeDisplay(modeKey: customModeKey(c.id), label: c.label, icon: c.icon));
+    }
+    return list;
+  }
+
+  /// Config for a session's mode (built-in or custom).
+  Future<MeetingModeConfig> getConfigForModeKey(String modeKey) async {
+    if (isCustomModeKey(modeKey)) {
+      final id = modeKey.substring(_customPrefix.length);
+      final customList = (await getCustomModes()).where((c) => c.id == id).toList();
+      if (customList.isNotEmpty) {
+        final custom = customList.first;
+        return MeetingModeConfig(
+          mode: MeetingMode.other,
+          realTimePrompt: custom.realTimePrompt,
+          notesTemplate: custom.notesTemplate,
+        );
+      }
+    }
+    final mode = MeetingMode.fromString(modeKey);
+    return getConfig(mode);
+  }
+
+  Future<List<CustomMeetingMode>> getCustomModes() async {
+    if (_authToken != null && _authToken!.isNotEmpty) {
+      try {
+        final url = _getApiUrl('/api/custom-mode-configs');
+        final response = await http.get(Uri.parse(url), headers: _getHeaders());
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body) as List<dynamic>;
+          final apiList = (data.map((e) => CustomMeetingMode.fromJson(e as Map<String, dynamic>))).toList();
+          final cached = await _loadCachedCustomModes();
+          if (apiList.isEmpty) {
+            if (cached.isNotEmpty) return cached;
+            final defaults = MeetingModeService.getDefaultCustomModes();
+            await _saveCustomModes(defaults);
+            return defaults;
+          }
+          final merged = <String, CustomMeetingMode>{};
+          for (final m in apiList) merged[m.id] = m;
+          for (final m in cached) merged[m.id] = m;
+          final result = merged.values.toList();
+          await _cacheCustomModes(result);
+          return result;
+        }
+      } catch (e) {
+        print('Failed to load custom modes from DB: $e');
+      }
+    }
+    final cached = await _loadCachedCustomModes();
+    if (cached.isEmpty) {
+      final defaults = MeetingModeService.getDefaultCustomModes();
+      await _cacheCustomModes(defaults);
+      return defaults;
+    }
+    return cached;
+  }
+
+  Future<void> addCustomMode(CustomMeetingMode custom) async {
+    final list = await getCustomModes();
+    if (list.any((e) => e.id == custom.id)) return;
+    list.add(custom);
+    await _saveCustomModes(list);
+  }
+
+  Future<void> updateCustomMode(CustomMeetingMode custom) async {
+    final list = await getCustomModes();
+    final id = custom.id;
+    // Build a new list replacing only the mode with matching id, so other modes keep their own notesTemplate
+    final toSave = [
+      for (final m in list)
+        if (m.id == id) custom else CustomMeetingMode(
+          id: m.id,
+          label: m.label,
+          iconCodePoint: m.iconCodePoint,
+          realTimePrompt: m.realTimePrompt,
+          notesTemplate: m.notesTemplate,
+        ),
+    ];
+    if (!list.any((e) => e.id == id)) {
+      toSave.add(custom);
+    }
+    await _saveCustomModes(toSave);
+  }
+
+  /// Deletes one custom mode by id. [authToken] is used for the API request.
+  Future<void> deleteCustomMode(String id, {String? authToken}) async {
+    final tokenToUse = (authToken != null && authToken.isNotEmpty) ? authToken! : _authToken;
+    if (tokenToUse == null || tokenToUse.isEmpty) {
+      // Offline: only update local cache
+      debugPrint('[RemoveMode] deleteCustomMode id=$id: no token, updating local cache only');
+      final list = List<CustomMeetingMode>.from(await getCustomModes());
+      final before = list.length;
+      list.removeWhere((e) => e.id == id);
+      await _cacheCustomModes(list);
+      debugPrint('[RemoveMode] deleteCustomMode offline done: list $before -> ${list.length}');
+      return;
+    }
+    _authToken = tokenToUse;
+    final url = _getApiUrl('/api/custom-mode-configs/${Uri.encodeComponent(id)}');
+    debugPrint('[RemoveMode] deleteCustomMode id=$id: sending DELETE $url');
+    final headers = <String, String>{
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer $tokenToUse',
+    };
+    final response = await http.delete(Uri.parse(url), headers: headers);
+    debugPrint('[RemoveMode] deleteCustomMode response: status=${response.statusCode} body=${response.body}');
+    if (response.statusCode != 200 && response.statusCode != 201) {
+      throw Exception('Failed to delete custom mode: ${response.statusCode} ${response.body}');
+    }
+    // Refresh from API only — do not use getCustomModes() here, it merges with cache
+    // and would bring the deleted mode back (cache is still stale).
+    final getUrl = _getApiUrl('/api/custom-mode-configs');
+    final getResponse = await http.get(Uri.parse(getUrl), headers: headers);
+    if (getResponse.statusCode == 200) {
+      final data = jsonDecode(getResponse.body) as List<dynamic>;
+      final list = (data.map((e) => CustomMeetingMode.fromJson(e as Map<String, dynamic>))).toList();
+      await _cacheCustomModes(list);
+      debugPrint('[RemoveMode] deleteCustomMode done, cache refreshed from API length=${list.length}');
+    }
+  }
+
+  Future<void> _saveCustomModes(List<CustomMeetingMode> list) async {
+    // Always persist to local cache first so data survives restart even if PUT fails
+    await _cacheCustomModes(list);
+    if (_authToken != null && _authToken!.isNotEmpty) {
+      final url = _getApiUrl('/api/custom-mode-configs');
+      final body = jsonEncode(list.map((e) => e.toJson()).toList());
+      final response = await http.put(
+        Uri.parse(url),
+        headers: _getHeaders(),
+        body: body,
+      );
+      if (response.statusCode != 200 && response.statusCode != 201) {
+        throw Exception('Failed to save custom modes to DB: ${response.statusCode} ${response.body}');
+      }
+    }
+  }
+
+  Future<void> _cacheCustomModes(List<CustomMeetingMode> list) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_customModesKey, jsonEncode(list.map((e) => e.toJson()).toList()));
+  }
+
+  Future<List<CustomMeetingMode>> _loadCachedCustomModes() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_customModesKey);
+    if (raw == null) return [];
+    try {
+      final data = jsonDecode(raw) as List<dynamic>;
+      return data.map((e) => CustomMeetingMode.fromJson(e as Map<String, dynamic>)).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
   Future<Map<MeetingMode, MeetingModeConfig>> _loadCachedConfigs() async {
     final prefs = await SharedPreferences.getInstance();
     final configsJson = prefs.getString(_configsKey);
@@ -166,15 +346,20 @@ class MeetingModeService {
       
       final configs = <MeetingMode, MeetingModeConfig>{};
       for (final mode in MeetingMode.values) {
+        MeetingModeConfig cfg;
         if (decoded.containsKey(mode.name)) {
           final configData = decoded[mode.name] as Map<String, dynamic>;
-          configs[mode] = MeetingModeConfig.fromJson({
+          cfg = MeetingModeConfig.fromJson({
             'mode': mode.name,
             ...configData,
           });
+          if (cfg.notesTemplate == _legacyDefaultNotesTemplate) {
+            cfg = cfg.copyWith(notesTemplate: defaultNotesTemplate);
+          }
         } else {
-          configs[mode] = getDefaultConfig(mode);
+          cfg = getDefaultConfig(mode);
         }
+        configs[mode] = cfg;
       }
       return configs;
     } catch (e) {
@@ -190,55 +375,78 @@ class MeetingModeService {
     await prefs.setString(_configsKey, jsonEncode(configsMap));
   }
 
+  /// Default notes template used by all modes: Overview, Background, Questions, Summary, Action Items.
+  static const String defaultNotesTemplate =
+      '## Overview\n'
+      'Brief summary of what this meeting or conversation is about.\n\n'
+      '## Background\n'
+      'Context and relevant information shared before or during the discussion.\n\n'
+      '## Questions\n'
+      'Key questions raised, answered, or still open.\n\n'
+      '## Summary\n'
+      'Main points, decisions, and outcomes from the conversation.\n\n'
+      '## Action Items\n'
+      'Tasks, next steps, owners, and deadlines.';
+
+  /// Legacy default without descriptions; migrated to [defaultNotesTemplate] when loading.
+  static const String _legacyDefaultNotesTemplate =
+      '## Overview\n\n## Background\n\n## Questions\n- \n\n## Summary\n\n## Action Items\n- ';
+
   static MeetingModeConfig getDefaultConfig(MeetingMode mode) {
     switch (mode) {
       case MeetingMode.general:
         return MeetingModeConfig(
           mode: mode,
           realTimePrompt: 'You are a helpful assistant. Provide concise, relevant responses based on the conversation.',
-          notesTemplate: '## Meeting Notes\n\n### Key Points\n- \n\n### Action Items\n- \n\n### Next Steps\n- ',
+          notesTemplate: defaultNotesTemplate,
         );
       case MeetingMode.interview:
         return MeetingModeConfig(
           mode: mode,
           realTimePrompt: 'You are an interview assistant. Help identify key candidate qualifications, strengths, and areas of concern. Ask relevant follow-up questions.',
-          notesTemplate: '## Interview Notes\n\n### Candidate Information\n- Name: \n- Position: \n\n### Key Qualifications\n- \n\n### Strengths\n- \n\n### Areas of Concern\n- \n\n### Recommendation\n',
+          notesTemplate: defaultNotesTemplate,
         );
       case MeetingMode.presentation:
         return MeetingModeConfig(
           mode: mode,
           realTimePrompt: 'You are a presentation assistant. Help summarize key points, identify questions from the audience, and suggest clarifications.',
-          notesTemplate: '## Presentation Notes\n\n### Topic\n\n### Key Points\n- \n\n### Questions Raised\n- \n\n### Feedback\n- ',
+          notesTemplate: defaultNotesTemplate,
         );
       case MeetingMode.discussion:
         return MeetingModeConfig(
           mode: mode,
           realTimePrompt: 'You are a discussion facilitator. Help identify main topics, summarize different viewpoints, and highlight decisions made.',
-          notesTemplate: '## Discussion Notes\n\n### Topics Discussed\n- \n\n### Viewpoints\n- \n\n### Decisions Made\n- \n\n### Open Questions\n- ',
+          notesTemplate: defaultNotesTemplate,
         );
       case MeetingMode.lecture:
         return MeetingModeConfig(
           mode: mode,
           realTimePrompt: 'You are a lecture assistant. Help summarize main concepts, identify important examples, and note questions from students.',
-          notesTemplate: '## Lecture Notes\n\n### Topic\n\n### Main Concepts\n- \n\n### Examples\n- \n\n### Questions\n- ',
+          notesTemplate: defaultNotesTemplate,
         );
       case MeetingMode.meeting:
         return MeetingModeConfig(
           mode: mode,
           realTimePrompt: 'You are a meeting assistant. Help track agenda items, summarize discussions, and identify action items and decisions.',
-          notesTemplate: '## Meeting Notes\n\n### Agenda\n- \n\n### Discussion\n- \n\n### Decisions\n- \n\n### Action Items\n- ',
+          notesTemplate: defaultNotesTemplate,
         );
       case MeetingMode.call:
         return MeetingModeConfig(
           mode: mode,
           realTimePrompt: 'You are a call assistant. Help summarize the conversation, identify important information exchanged, and note follow-ups.',
-          notesTemplate: '## Call Notes\n\n### Participants\n- \n\n### Topics Discussed\n- \n\n### Key Information\n- \n\n### Follow-ups\n- ',
+          notesTemplate: defaultNotesTemplate,
+        );
+      case MeetingMode.brainstorm:
+        return MeetingModeConfig(
+          mode: mode,
+          realTimePrompt: 'You are a brainstorm facilitator. Help capture ideas, group related concepts, identify themes, and suggest next steps or priorities.',
+          notesTemplate: defaultNotesTemplate,
         );
       case MeetingMode.other:
         return MeetingModeConfig(
           mode: mode,
           realTimePrompt: 'You are a helpful assistant. Provide concise, relevant responses based on the conversation.',
-          notesTemplate: '## Notes\n\n### Summary\n\n### Key Points\n- \n\n### Action Items\n- ',
+          notesTemplate: defaultNotesTemplate,
         );
     }
   }
@@ -248,5 +456,19 @@ class MeetingModeService {
       for (final mode in MeetingMode.values)
         mode: getDefaultConfig(mode),
     };
+  }
+
+  /// Default custom modes: one per built-in template. Used when the user has no custom modes yet.
+  static List<CustomMeetingMode> getDefaultCustomModes() {
+    return [
+      for (final mode in MeetingMode.values)
+        CustomMeetingMode(
+          id: 'default-${mode.name}',
+          label: mode.label,
+          iconCodePoint: mode.icon.codePoint,
+          realTimePrompt: getDefaultConfig(mode).realTimePrompt,
+          notesTemplate: getDefaultConfig(mode).notesTemplate,
+        ),
+    ];
   }
 }
