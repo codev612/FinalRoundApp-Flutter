@@ -281,7 +281,24 @@ class SpeechToTextProvider extends ChangeNotifier {
       },
       onError: (error) {
         _errorMessage = error.toString();
-        notifyListeners();
+        // If recording was active, stop it when WebSocket error occurs
+        if (_isRecording) {
+          print('[SpeechToTextProvider] WebSocket error during recording, stopping recording');
+          // Stop recording asynchronously to avoid blocking
+          Future.microtask(() async {
+            try {
+              await stopRecording();
+            } catch (e) {
+              print('[SpeechToTextProvider] Error stopping recording after WebSocket error: $e');
+              // Force stop if stopRecording fails
+              _isRecording = false;
+              _isConnected = false;
+              notifyListeners();
+            }
+          });
+        } else {
+          notifyListeners();
+        }
       },
     );
   }

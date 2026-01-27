@@ -1018,20 +1018,17 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                           children: [
                             if (isRec)
                               IconButton.outlined(
-                                onPressed: () {
+                                onPressed: () async {
                                   if (!mounted) return;
-                                  // Use unawaited to prevent blocking and potential context issues
-                                  () async {
-                                    try {
-                                      await speechProvider.stopRecording();
-                                      // Don't save automatically - let user save manually to avoid crashes
-                                      // Session is auto-saved periodically anyway
-                                    } catch (e, stackTrace) {
-                                      debugPrint('Error stopping recording: $e');
-                                      debugPrint('Stack trace: $stackTrace');
-                                      // Don't show SnackBar here to avoid context access issues
-                                    }
-                                  }();
+                                  try {
+                                    await speechProvider.stopRecording();
+                                    // Don't save automatically - let user save manually to avoid crashes
+                                    // Session is auto-saved periodically anyway
+                                  } catch (e, stackTrace) {
+                                    debugPrint('Error stopping recording: $e');
+                                    debugPrint('Stack trace: $stackTrace');
+                                    // Don't show SnackBar here to avoid context access issues
+                                  }
                                 },
                                 tooltip: 'Stop (Ctrl+R)',
                                 icon: const Icon(Icons.stop),

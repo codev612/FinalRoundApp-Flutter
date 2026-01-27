@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'dart:io' show Platform;
+import 'package:record/record.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/app_config.dart';
 import '../providers/shortcuts_provider.dart';
@@ -73,6 +75,12 @@ class _SettingsPageState extends State<SettingsPage> {
                 onTap: () => setState(() => _selectedIndex = 2),
               ),
               _SidebarItem(
+                icon: Icons.mic,
+                label: 'Audio',
+                isSelected: _selectedIndex == 3,
+                onTap: () => setState(() => _selectedIndex = 3),
+              ),
+              _SidebarItem(
                 icon: Icons.tune,
                 label: 'Manage Modes',
                 isSelected: false,
@@ -86,8 +94,8 @@ class _SettingsPageState extends State<SettingsPage> {
                 _SidebarItem(
                   icon: Icons.palette,
                   label: 'Appearance',
-                  isSelected: _selectedIndex == 3,
-                  onTap: () => setState(() => _selectedIndex = 3),
+                  isSelected: _selectedIndex == 4,
+                  onTap: () => setState(() => _selectedIndex = 4),
                 ),
             ],
           ),
@@ -130,6 +138,8 @@ class _SettingsPageState extends State<SettingsPage> {
           case 2:
             return _buildConnectionContent();
           case 3:
+            return _buildAudioDevicesContent();
+          case 4:
             return Platform.isWindows ? _buildAppearanceContent() : _buildProfileContent();
           default:
             return _buildProfileContent();
@@ -250,6 +260,241 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Widget _buildAppearanceContent() {
     return _AppearanceSettings();
+  }
+
+  Widget _buildAudioDevicesContent() {
+    return _AudioDeviceSettings();
+  }
+}
+
+class _AudioDeviceSettings extends StatefulWidget {
+  const _AudioDeviceSettings();
+
+  @override
+  State<_AudioDeviceSettings> createState() => _AudioDeviceSettingsState();
+}
+
+class _AudioDeviceSettingsState extends State<_AudioDeviceSettings> {
+  final AudioRecorder _recorder = AudioRecorder();
+  List<InputDevice> _devices = [];
+  String? _selectedDeviceId;
+  bool _isLoading = true;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDevices();
+    _loadSelectedDevice();
+  }
+
+  Future<void> _loadDevices() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final devices = await _recorder.listInputDevices();
+      if (mounted) {
+        setState(() {
+          _devices = devices;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _errorMessage = 'Failed to load audio devices: $e';
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _loadSelectedDevice() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedDeviceId = prefs.getString('selected_audio_device_id');
+      if (mounted && savedDeviceId != null) {
+        setState(() {
+          _selectedDeviceId = savedDeviceId;
+        });
+      }
+    } catch (e) {
+      print('[AudioDeviceSettings] Error loading selected device: $e');
+    }
+  }
+
+  Future<void> _selectDevice(String deviceId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('selected_audio_device_id', deviceId);
+      if (mounted) {
+        setState(() {
+          _selectedDeviceId = deviceId;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Audio device selected. Restart recording to apply changes.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to save device selection: $e')),
+        );
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _recorder.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Row(
+          children: [
+            const Text(
+              'Audio Devices',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const Spacer(),
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              tooltip: 'Refresh devices',
+              onPressed: _loadDevices,
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Select the microphone/input device to use for recording',
+          style: TextStyle(fontSize: 14, color: Colors.grey),
+        ),
+        const SizedBox(height: 16),
+        if (_isLoading)
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.all(24.0),
+              child: CircularProgressIndicator(),
+            ),
+          )
+        else if (_errorMessage != null)
+          Card(
+            color: Theme.of(context).colorScheme.errorContainer,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  Icon(Icons.error, color: Theme.of(context).colorScheme.onErrorContainer),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      _errorMessage!,
+                      style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          )
+        else if (_devices.isEmpty)
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  const Icon(Icons.info),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'No audio input devices found',
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          )
+        else
+          ..._devices.map((device) {
+            final isSelected = _selectedDeviceId == device.id;
+            return Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: RadioListTile<String>(
+                title: Text(device.label),
+                subtitle: device.id.isNotEmpty
+                    ? Text(
+                        'ID: ${device.id}',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+                        ),
+                      )
+                    : null,
+                value: device.id,
+                groupValue: _selectedDeviceId,
+                onChanged: (value) {
+                  if (value != null) {
+                    _selectDevice(value);
+                  }
+                },
+                secondary: Icon(
+                  isSelected ? Icons.mic : Icons.mic_none,
+                  color: isSelected
+                      ? Theme.of(context).colorScheme.primary
+                      : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                ),
+              ),
+            );
+          }),
+        const SizedBox(height: 16),
+        Card(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      Icons.info,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Note',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'The selected device will be used the next time you start recording. '
+                  'If no device is selected, the system default will be used.',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.8),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
   }
 }
 

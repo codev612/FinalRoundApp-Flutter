@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:record/record.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class AudioCaptureService {
   late final AudioRecorder _recorder;
@@ -8,6 +9,17 @@ class AudioCaptureService {
 
   AudioCaptureService({required this.onAudioData}) {
     _recorder = AudioRecorder();
+  }
+
+  /// Get the selected audio device ID from preferences
+  static Future<String?> getSelectedDeviceId() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getString('selected_audio_device_id');
+    } catch (e) {
+      print('[AudioCaptureService] Error loading selected device: $e');
+      return null;
+    }
   }
 
   Future<bool> requestPermissions() async {
@@ -35,15 +47,42 @@ class AudioCaptureService {
         await _recorder.stop();
       }
 
+      // Get selected device ID if available
+      final selectedDeviceId = await getSelectedDeviceId();
+      
+      // Try to find and use the selected device
+      InputDevice? selectedDevice;
+      if (selectedDeviceId != null && selectedDeviceId.isNotEmpty) {
+        try {
+          final devices = await _recorder.listInputDevices();
+          final device = devices.firstWhere(
+            (d) => d.id == selectedDeviceId,
+            orElse: () => InputDevice(id: '', label: ''),
+          );
+          if (device.id.isNotEmpty) {
+            selectedDevice = device;
+            print('[AudioCaptureService] Using selected audio device: ${device.label} (${device.id})');
+          }
+        } catch (e) {
+          print('[AudioCaptureService] Error finding device, using default: $e');
+        }
+      }
+      
       // Start recording microphone with streaming
+      // RecordConfig.device parameter is optional and may not be supported on all platforms
       final recordStream = await _recorder.startStream(
-        const RecordConfig(
+        RecordConfig(
           encoder: AudioEncoder.pcm16bits,
           sampleRate: 16000,
           numChannels: 1,
           bitRate: 128000,
+          device: selectedDevice?.id.isNotEmpty == true ? selectedDevice : null,
         ),
       );
+      
+      if (selectedDevice == null) {
+        print('[AudioCaptureService] Using default audio device');
+      }
 
       print('[AudioCaptureService] Audio stream started');
 
