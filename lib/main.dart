@@ -187,6 +187,10 @@ class MyApp extends StatelessWidget {
             }
           });
           
+          // Create user-friendly text theme
+          final baseLightTextTheme = Typography.material2021(platform: TargetPlatform.windows);
+          final baseDarkTextTheme = Typography.material2021(platform: TargetPlatform.windows);
+          
           return MaterialApp(
             title: 'FinalRound',
             theme: ThemeData(
@@ -196,6 +200,84 @@ class MyApp extends StatelessWidget {
               ),
               useMaterial3: true,
               scaffoldBackgroundColor: Colors.transparent,
+              textTheme: baseLightTextTheme.black.copyWith(
+                // Headlines - larger, bolder for important titles
+                headlineLarge: baseLightTextTheme.black.headlineLarge?.copyWith(
+                  fontSize: 32,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -0.5,
+                  height: 1.2,
+                ),
+                headlineMedium: baseLightTextTheme.black.headlineMedium?.copyWith(
+                  fontSize: 28,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: -0.5,
+                  height: 1.3,
+                ),
+                headlineSmall: baseLightTextTheme.black.headlineSmall?.copyWith(
+                  fontSize: 24,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: -0.25,
+                  height: 1.3,
+                ),
+                // Titles - for section headers and card titles
+                titleLarge: baseLightTextTheme.black.titleLarge?.copyWith(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0,
+                  height: 1.4,
+                ),
+                titleMedium: baseLightTextTheme.black.titleMedium?.copyWith(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.15,
+                  height: 1.5,
+                ),
+                titleSmall: baseLightTextTheme.black.titleSmall?.copyWith(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.1,
+                  height: 1.5,
+                ),
+                // Body text - main content
+                bodyLarge: baseLightTextTheme.black.bodyLarge?.copyWith(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w400,
+                  letterSpacing: 0.5,
+                  height: 1.6,
+                ),
+                bodyMedium: baseLightTextTheme.black.bodyMedium?.copyWith(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w400,
+                  letterSpacing: 0.25,
+                  height: 1.5,
+                ),
+                bodySmall: baseLightTextTheme.black.bodySmall?.copyWith(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w400,
+                  letterSpacing: 0.4,
+                  height: 1.4,
+                ),
+                // Labels - for buttons, form fields
+                labelLarge: baseLightTextTheme.black.labelLarge?.copyWith(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 0.1,
+                  height: 1.4,
+                ),
+                labelMedium: baseLightTextTheme.black.labelMedium?.copyWith(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 0.5,
+                  height: 1.4,
+                ),
+                labelSmall: baseLightTextTheme.black.labelSmall?.copyWith(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 0.5,
+                  height: 1.4,
+                ),
+              ),
             ),
             darkTheme: ThemeData(
               colorScheme: ColorScheme.fromSeed(
@@ -204,6 +286,84 @@ class MyApp extends StatelessWidget {
               ),
               useMaterial3: true,
               scaffoldBackgroundColor: Colors.transparent,
+              textTheme: baseDarkTextTheme.white.copyWith(
+                // Headlines - larger, bolder for important titles
+                headlineLarge: baseDarkTextTheme.white.headlineLarge?.copyWith(
+                  fontSize: 32,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -0.5,
+                  height: 1.2,
+                ),
+                headlineMedium: baseDarkTextTheme.white.headlineMedium?.copyWith(
+                  fontSize: 28,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: -0.5,
+                  height: 1.3,
+                ),
+                headlineSmall: baseDarkTextTheme.white.headlineSmall?.copyWith(
+                  fontSize: 24,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: -0.25,
+                  height: 1.3,
+                ),
+                // Titles - for section headers and card titles
+                titleLarge: baseDarkTextTheme.white.titleLarge?.copyWith(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0,
+                  height: 1.4,
+                ),
+                titleMedium: baseDarkTextTheme.white.titleMedium?.copyWith(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.15,
+                  height: 1.5,
+                ),
+                titleSmall: baseDarkTextTheme.white.titleSmall?.copyWith(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.1,
+                  height: 1.5,
+                ),
+                // Body text - main content
+                bodyLarge: baseDarkTextTheme.white.bodyLarge?.copyWith(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w400,
+                  letterSpacing: 0.5,
+                  height: 1.6,
+                ),
+                bodyMedium: baseDarkTextTheme.white.bodyMedium?.copyWith(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w400,
+                  letterSpacing: 0.25,
+                  height: 1.5,
+                ),
+                bodySmall: baseDarkTextTheme.white.bodySmall?.copyWith(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w400,
+                  letterSpacing: 0.4,
+                  height: 1.4,
+                ),
+                // Labels - for buttons, form fields
+                labelLarge: baseDarkTextTheme.white.labelLarge?.copyWith(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 0.1,
+                  height: 1.4,
+                ),
+                labelMedium: baseDarkTextTheme.white.labelMedium?.copyWith(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 0.5,
+                  height: 1.4,
+                ),
+                labelSmall: baseDarkTextTheme.white.labelSmall?.copyWith(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 0.5,
+                  height: 1.4,
+                ),
+              ),
             ),
             themeMode: themeProvider.themeMode,
             home: const AppShell(),

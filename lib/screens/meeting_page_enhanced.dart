@@ -2467,16 +2467,26 @@ class _SessionsListPageState extends State<SessionsListPage> {
   int _totalSessions = 0;
   String _searchQuery = '';
   Timer? _searchDebounceTimer;
+  MeetingModeService? _modeService;
+  List<ModeDisplay>? _modeDisplays;
 
   @override
   void initState() {
     super.initState();
     _searchController.addListener(_onSearchChanged);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       final authProvider = context.read<AuthProvider>();
       final meetingProvider = context.read<MeetingProvider>();
       // Ensure auth token is set before loading sessions
       meetingProvider.updateAuthToken(authProvider.token);
+      
+      // Initialize mode service and load mode displays
+      if (mounted) {
+        _modeService = MeetingModeService();
+        _modeService!.setAuthToken(authProvider.token);
+        _modeDisplays = await _modeService!.getModeDisplays();
+      }
+      
       _loadSessions();
     });
   }
@@ -2553,14 +2563,368 @@ class _SessionsListPageState extends State<SessionsListPage> {
   String _formatDuration(Duration duration) {
     final hours = duration.inHours;
     final minutes = duration.inMinutes.remainder(60);
+    final seconds = duration.inSeconds.remainder(60);
     if (hours > 0) {
       return '${hours}h ${minutes}m';
+    } else if (minutes > 0) {
+      return '${minutes}m ${seconds}s';
     }
-    return '${minutes}m';
+    return '${seconds}s';
+  }
+
+  String _formatDate(DateTime date) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final yesterday = today.subtract(const Duration(days: 1));
+    final dateOnly = DateTime(date.year, date.month, date.day);
+    
+    if (dateOnly == today) {
+      return 'Today';
+    } else if (dateOnly == yesterday) {
+      return 'Yesterday';
+    } else {
+      final months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      return '${months[date.month - 1]} ${date.day}, ${date.year}';
+    }
+  }
+
+  String _formatTime(DateTime date) {
+    final hour = date.hour;
+    final minute = date.minute.toString().padLeft(2, '0');
+    final period = hour >= 12 ? 'PM' : 'AM';
+    final displayHour = hour > 12 ? hour - 12 : (hour == 0 ? 12 : hour);
+    return '$displayHour:$minute $period';
+  }
+
+  ModeDisplay? _getModeDisplay(String modeKey) {
+    if (_modeDisplays == null) return null;
+    return _modeDisplays!.firstWhere(
+      (display) => display.modeKey == modeKey,
+      orElse: () => ModeDisplay(
+        modeKey: modeKey,
+        label: 'Unknown',
+        icon: Icons.help_outline,
+      ),
+    );
+  }
+
+  Widget _buildSessionCard({
+    required MeetingSession session,
+    required bool isCurrentSession,
+    required bool isRecording,
+    required MeetingProvider provider,
+    required BuildContext context,
+  }) {
+    final theme = Theme.of(context);
+    final modeDisplay = _getModeDisplay(session.modeKey);
+    final modeIcon = modeDisplay?.icon ?? Icons.help_outline;
+    final modeLabel = modeDisplay?.label ?? 'Unknown';
+    
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      elevation: isCurrentSession ? 2 : 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: isCurrentSession
+            ? BorderSide(
+                color: theme.colorScheme.primary.withValues(alpha: 0.5),
+                width: 2,
+              )
+            : BorderSide(
+                color: theme.colorScheme.outline.withValues(alpha: 0.1),
+                width: 1,
+              ),
+      ),
+      child: InkWell(
+        onTap: () async {
+          await provider.loadSession(session.id);
+          if (mounted) {
+            Navigator.pop(context);
+          }
+        },
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Header row with title and status badge
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                session.title,
+                                style: theme.textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            if (isCurrentSession) ...[
+                              const SizedBox(width: 8),
+                              _AnimatedSessionBadge(
+                                isRecording: isRecording,
+                              ),
+                            ],
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        // Date and time
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.calendar_today,
+                              size: 14,
+                              color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              _formatDate(session.createdAt),
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Icon(
+                              Icons.access_time,
+                              size: 14,
+                              color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              _formatTime(session.createdAt),
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  // Action menu
+                  PopupMenuButton<String>(
+                    icon: Icon(
+                      Icons.more_vert,
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                    ),
+                    onSelected: (value) async {
+                      if (value == 'export') {
+                        try {
+                          final text = await provider.exportSessionAsText(session.id);
+                          await Clipboard.setData(ClipboardData(text: text));
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: const Row(
+                                  children: [
+                                    Icon(Icons.check_circle, color: Colors.white),
+                                    SizedBox(width: 8),
+                                    Text('Exported to clipboard'),
+                                  ],
+                                ),
+                                backgroundColor: Colors.green,
+                                behavior: SnackBarBehavior.floating,
+                              ),
+                            );
+                          }
+                        } catch (e) {
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('Export failed: $e'),
+                                backgroundColor: theme.colorScheme.error,
+                                behavior: SnackBarBehavior.floating,
+                              ),
+                            );
+                          }
+                        }
+                      } else if (value == 'delete') {
+                        final confirmed = await showDialog<bool>(
+                          context: context,
+                          builder: (context) => AlertDialog(
+                            title: Row(
+                              children: [
+                                Icon(
+                                  Icons.warning_amber_rounded,
+                                  color: theme.colorScheme.error,
+                                  size: 24,
+                                ),
+                                const SizedBox(width: 8),
+                                const Text('Delete Session?'),
+                              ],
+                            ),
+                            content: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('Are you sure you want to delete this session?'),
+                                const SizedBox(height: 12),
+                                Container(
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: theme.colorScheme.surfaceVariant.withValues(alpha: 0.5),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        Icons.description,
+                                        size: 16,
+                                        color: theme.colorScheme.onSurfaceVariant,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          session.title,
+                                          style: theme.textTheme.bodyMedium,
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  'This action cannot be undone.',
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: theme.colorScheme.error,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(context, false),
+                                child: const Text('Cancel'),
+                              ),
+                              FilledButton(
+                                onPressed: () => Navigator.pop(context, true),
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: theme.colorScheme.error,
+                                ),
+                                child: const Text('Delete'),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (confirmed == true && mounted) {
+                          await provider.deleteSession(session.id);
+                          _loadSessions();
+                        }
+                      }
+                    },
+                    itemBuilder: (context) => [
+                      PopupMenuItem(
+                        value: 'export',
+                        child: Row(
+                          children: [
+                            Icon(Icons.download, size: 20, color: theme.colorScheme.onSurface),
+                            const SizedBox(width: 12),
+                            const Text('Export'),
+                          ],
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'delete',
+                        child: Row(
+                          children: [
+                            Icon(Icons.delete, size: 20, color: theme.colorScheme.error),
+                            const SizedBox(width: 12),
+                            Text(
+                              'Delete',
+                              style: TextStyle(color: theme.colorScheme.error),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              // Session metadata row
+              Wrap(
+                spacing: 16,
+                runSpacing: 8,
+                children: [
+                  // Mode
+                  _buildMetadataChip(
+                    icon: modeIcon,
+                    label: modeLabel,
+                    color: theme.colorScheme.primary,
+                    context: context,
+                  ),
+                  // Duration
+                  _buildMetadataChip(
+                    icon: Icons.timer_outlined,
+                    label: _formatDuration(session.duration),
+                    color: theme.colorScheme.secondary,
+                    context: context,
+                  ),
+                  // Bubble count
+                  if (session.bubbles.isNotEmpty)
+                    _buildMetadataChip(
+                      icon: Icons.chat_bubble_outline,
+                      label: '${session.bubbles.length} messages',
+                      color: theme.colorScheme.tertiary,
+                      context: context,
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMetadataChip({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required BuildContext context,
+  }) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: color.withValues(alpha: 0.3),
+          width: 1,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: color,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final totalPages = _totalSessions > 0 ? (_totalSessions / _itemsPerPage).ceil() : 0;
     final hasNextPage = _currentPage < totalPages - 1;
     final hasPrevPage = _currentPage > 0;
@@ -2569,165 +2933,175 @@ class _SessionsListPageState extends State<SessionsListPage> {
     final actualEndItem = endItem > _totalSessions ? _totalSessions : endItem;
 
     return Scaffold(
-      backgroundColor: Theme.of(context).colorScheme.surface,
+      backgroundColor: theme.colorScheme.surface,
       appBar: AppBar(
         title: const Text('Meeting Sessions'),
+        elevation: 0,
       ),
       body: Column(
         children: [
-          // Search bar
-          Padding(
-            padding: const EdgeInsets.all(16.0),
+          // Search bar with better styling
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surface,
+              border: Border(
+                bottom: BorderSide(
+                  color: theme.colorScheme.outline.withValues(alpha: 0.1),
+                ),
+              ),
+            ),
             child: TextField(
               controller: _searchController,
               decoration: InputDecoration(
                 hintText: 'Search sessions by title...',
-                prefixIcon: const Icon(Icons.search),
+                prefixIcon: Icon(
+                  Icons.search,
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                ),
                 suffixIcon: _searchQuery.isNotEmpty
                     ? IconButton(
-                        icon: const Icon(Icons.clear),
+                        icon: Icon(
+                          Icons.clear,
+                          color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                        ),
                         onPressed: () {
                           _searchController.clear();
                         },
                       )
                     : null,
                 border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(
+                    color: theme.colorScheme.outline.withValues(alpha: 0.2),
+                  ),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(
+                    color: theme.colorScheme.outline.withValues(alpha: 0.2),
+                  ),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(
+                    color: theme.colorScheme.primary,
+                    width: 2,
+                  ),
                 ),
                 filled: true,
-                fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                fillColor: theme.colorScheme.surfaceContainerHighest,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               ),
             ),
           ),
           // Sessions list
           Expanded(
-            child: Container(
-              color: Theme.of(context).colorScheme.surface,
-              child: Consumer<MeetingProvider>(
-                builder: (context, provider, child) {
-                  if (provider.isLoading && provider.sessions.isEmpty) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-
-                  if (provider.sessions.isEmpty) {
-                    return Center(
-                      child: Text(
-                        _searchQuery.isNotEmpty
-                            ? 'No sessions found matching "$_searchQuery"'
-                            : 'No saved sessions',
-                      ),
-                    );
-                  }
-
-                  return RefreshIndicator(
-                    onRefresh: _loadSessions,
-                    child: Consumer<SpeechToTextProvider>(
-                      builder: (context, speechProvider, _) {
-                        final currentSession = provider.currentSession;
-                        final isRecording = speechProvider.isRecording;
-                        
-                        return ListView.builder(
-                          itemCount: provider.sessions.length,
-                          itemBuilder: (context, index) {
-                            final session = provider.sessions[index];
-                            final isCurrentSession = currentSession != null && 
-                                currentSession.id == session.id;
-                            
-                            return ListTile(
-                              title: Row(
-                                children: [
-                                  Expanded(
-                                    child: Text(session.title),
-                                  ),
-                                  if (isCurrentSession) ...[
-                                    const SizedBox(width: 8),
-                                    _AnimatedSessionBadge(
-                                      isRecording: isRecording,
-                                    ),
-                                  ],
-                                ],
-                              ),
-                              subtitle: Text(
-                                '${session.createdAt.toLocal().toString().substring(0, 16)} • ${_formatDuration(session.duration)}',
-                              ),
-                              trailing: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  IconButton(
-                                    icon: const Icon(Icons.download),
-                                    tooltip: 'Export',
-                                    onPressed: () async {
-                                      try {
-                                        final text = await provider.exportSessionAsText(session.id);
-                                        await Clipboard.setData(ClipboardData(text: text));
-                                        if (mounted) {
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            const SnackBar(content: Text('Exported to clipboard')),
-                                          );
-                                        }
-                                      } catch (e) {
-                                        if (mounted) {
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            SnackBar(content: Text('Export failed: $e')),
-                                          );
-                                        }
-                                      }
-                                    },
-                                  ),
-                                  IconButton(
-                                    icon: const Icon(Icons.delete),
-                                    tooltip: 'Delete',
-                                    onPressed: () async {
-                                      final confirmed = await showDialog<bool>(
-                                        context: context,
-                                        builder: (context) => AlertDialog(
-                                          title: const Text('Delete Session?'),
-                                          content: Text('Delete "${session.title}"?'),
-                                          actions: [
-                                            TextButton(
-                                              onPressed: () => Navigator.pop(context, false),
-                                              child: const Text('Cancel'),
-                                            ),
-                                            TextButton(
-                                              onPressed: () => Navigator.pop(context, true),
-                                              child: const Text('Delete'),
-                                            ),
-                                          ],
-                                        ),
-                                      );
-                                      if (confirmed == true && mounted) {
-                                        await provider.deleteSession(session.id);
-                                        _loadSessions(); // Reload to update pagination
-                                      }
-                                    },
-                                  ),
-                                ],
-                              ),
-                              onTap: () async {
-                                await provider.loadSession(session.id);
-                                if (mounted) {
-                                  Navigator.pop(context);
-                                }
-                              },
-                            );
-                          },
-                        );
-                      },
+            child: Consumer<MeetingProvider>(
+              builder: (context, provider, child) {
+                if (provider.isLoading && provider.sessions.isEmpty) {
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        CircularProgressIndicator(
+                          color: theme.colorScheme.primary,
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          'Loading sessions...',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                          ),
+                        ),
+                      ],
                     ),
                   );
-                },
-              ),
+                }
+
+                if (provider.sessions.isEmpty) {
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          _searchQuery.isNotEmpty ? Icons.search_off : Icons.event_note_outlined,
+                          size: 80,
+                          color: theme.colorScheme.onSurface.withValues(alpha: 0.3),
+                        ),
+                        const SizedBox(height: 24),
+                        Text(
+                          _searchQuery.isNotEmpty
+                              ? 'No sessions found'
+                              : 'No saved sessions',
+                          style: theme.textTheme.headlineSmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          _searchQuery.isNotEmpty
+                              ? 'Try adjusting your search terms'
+                              : 'Start a meeting to see it here',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                          ),
+                        ),
+                        if (_searchQuery.isNotEmpty) ...[
+                          const SizedBox(height: 16),
+                          TextButton.icon(
+                            onPressed: () {
+                              _searchController.clear();
+                            },
+                            icon: const Icon(Icons.clear),
+                            label: const Text('Clear search'),
+                          ),
+                        ],
+                      ],
+                    ),
+                  );
+                }
+
+                return RefreshIndicator(
+                  onRefresh: _loadSessions,
+                  color: theme.colorScheme.primary,
+                  child: Consumer<SpeechToTextProvider>(
+                    builder: (context, speechProvider, _) {
+                      final currentSession = provider.currentSession;
+                      final isRecording = speechProvider.isRecording;
+                      
+                      return ListView.builder(
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        itemCount: provider.sessions.length,
+                        itemBuilder: (context, index) {
+                          final session = provider.sessions[index];
+                          final isCurrentSession = currentSession != null && 
+                              currentSession.id == session.id;
+                          
+                          return _buildSessionCard(
+                            session: session,
+                            isCurrentSession: isCurrentSession,
+                            isRecording: isRecording,
+                            provider: provider,
+                            context: context,
+                          );
+                        },
+                      );
+                    },
+                  ),
+                );
+              },
             ),
           ),
           // Pagination controls
           if (totalPages > 1)
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                color: theme.colorScheme.surfaceContainerHighest,
                 border: Border(
                   top: BorderSide(
-                    color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2),
+                    color: theme.colorScheme.outline.withValues(alpha: 0.1),
                   ),
                 ),
               ),
@@ -2737,9 +3111,11 @@ class _SessionsListPageState extends State<SessionsListPage> {
                   // Page info
                   Text(
                     _totalSessions > 0
-                        ? 'Showing $startItem-$actualEndItem of $_totalSessions'
+                        ? 'Showing $startItem-$actualEndItem of $_totalSessions sessions'
                         : 'No sessions',
-                    style: Theme.of(context).textTheme.bodySmall,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+                    ),
                   ),
                   // Pagination buttons
                   Row(
@@ -2748,18 +3124,35 @@ class _SessionsListPageState extends State<SessionsListPage> {
                         icon: const Icon(Icons.chevron_left),
                         onPressed: hasPrevPage ? () => _goToPage(_currentPage - 1) : null,
                         tooltip: 'Previous page',
+                        style: IconButton.styleFrom(
+                          backgroundColor: hasPrevPage
+                              ? theme.colorScheme.surface
+                              : null,
+                        ),
                       ),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.primaryContainer,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
                         child: Text(
                           'Page ${_currentPage + 1} of $totalPages',
-                          style: Theme.of(context).textTheme.bodyMedium,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            fontWeight: FontWeight.w600,
+                            color: theme.colorScheme.onPrimaryContainer,
+                          ),
                         ),
                       ),
                       IconButton(
                         icon: const Icon(Icons.chevron_right),
                         onPressed: hasNextPage ? () => _goToPage(_currentPage + 1) : null,
                         tooltip: 'Next page',
+                        style: IconButton.styleFrom(
+                          backgroundColor: hasNextPage
+                              ? theme.colorScheme.surface
+                              : null,
+                        ),
                       ),
                     ],
                   ),
