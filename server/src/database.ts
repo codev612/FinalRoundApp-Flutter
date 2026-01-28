@@ -75,6 +75,7 @@ export interface MeetingSession {
   summary?: string | null;
   insights?: string | null;
   questions?: string | null;
+  modeKey?: string; // Mode key: built-in enum name (e.g. "general") or "custom:{id}" for custom modes
   metadata?: Record<string, any>;
 }
 
@@ -263,6 +264,7 @@ const formatSessionForApi = (session: MeetingSession): any => {
     summary: session.summary,
     insights: session.insights,
     questions: session.questions,
+    modeKey: session.modeKey || 'general', // Default to 'general' if not set
     metadata: session.metadata || {},
   };
 };

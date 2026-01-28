@@ -87,7 +87,7 @@ app.use('/api/auth', authRoutes);
 app.post('/api/sessions', authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.userId;
-    const { id, title, createdAt, updatedAt, bubbles, summary, insights, questions, metadata } = req.body;
+    const { id, title, createdAt, updatedAt, bubbles, summary, insights, questions, mode, modeKey, metadata } = req.body;
 
     if (!title || !createdAt) {
       return res.status(400).json({ error: 'Missing required fields: title, createdAt' });
@@ -107,6 +107,7 @@ app.post('/api/sessions', authenticate, async (req: AuthRequest, res: Response) 
       summary: summary ? String(summary) : null,
       insights: insights ? String(insights) : null,
       questions: questions ? String(questions) : null,
+      modeKey: modeKey ? String(modeKey) : (mode ? String(mode) : 'general'), // Support both 'mode' and 'modeKey' for backward compatibility
       metadata: metadata && typeof metadata === 'object' ? metadata : {},
     };
 
@@ -149,7 +150,7 @@ app.put('/api/sessions/:id', authenticate, async (req: AuthRequest, res: Respons
   try {
     const userId = req.user!.userId;
     const sessionId = req.params.id;
-    const { title, createdAt, updatedAt, bubbles, summary, insights, questions, metadata } = req.body;
+    const { title, createdAt, updatedAt, bubbles, summary, insights, questions, mode, modeKey, metadata } = req.body;
 
     // Check if sessionId is a valid MongoDB ObjectId
     const isValidObjectId = /^[0-9a-fA-F]{24}$/.test(sessionId);
@@ -174,6 +175,7 @@ app.put('/api/sessions/:id', authenticate, async (req: AuthRequest, res: Respons
         summary: summary ? String(summary) : null,
         insights: insights ? String(insights) : null,
         questions: questions ? String(questions) : null,
+        modeKey: modeKey ? String(modeKey) : (mode ? String(mode) : 'general'), // Support both 'mode' and 'modeKey' for backward compatibility
         metadata: metadata && typeof metadata === 'object' ? metadata : {},
       };
 
@@ -197,6 +199,8 @@ app.put('/api/sessions/:id', authenticate, async (req: AuthRequest, res: Respons
     if (summary !== undefined) updates.summary = summary ? String(summary) : null;
     if (insights !== undefined) updates.insights = insights ? String(insights) : null;
     if (questions !== undefined) updates.questions = questions ? String(questions) : null;
+    if (modeKey !== undefined) updates.modeKey = modeKey ? String(modeKey) : 'general';
+    else if (mode !== undefined) updates.modeKey = mode ? String(mode) : 'general'; // Support both 'mode' and 'modeKey' for backward compatibility
     if (metadata !== undefined) updates.metadata = metadata && typeof metadata === 'object' ? metadata : {};
 
     const success = await updateMeetingSession(sessionId, userId, updates);

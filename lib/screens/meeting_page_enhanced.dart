@@ -89,12 +89,20 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
         if (isNewSession) {
           // It's a new session - clear any existing bubbles to start fresh
           _speechProvider!.clearTranscript();
+          // Reset recording start time for new session
+          _recordingStartedAt = null;
         } else if (currentSession.bubbles.isNotEmpty) {
           // Session has bubbles and is a saved session - restore them (user clicked a saved session)
           _speechProvider!.restoreBubbles(currentSession.bubbles);
+          // Initialize recording start time from session (first bubble or createdAt)
+          _recordingStartedAt = currentSession.bubbles.isNotEmpty 
+              ? currentSession.bubbles.first.timestamp 
+              : currentSession.createdAt;
         } else {
           // Session exists but is empty (saved session with no bubbles) - clear bubbles
           _speechProvider!.clearTranscript();
+          // Reset recording start time
+          _recordingStartedAt = null;
         }
       } else {
         // No current session - try to restore last session, or create new
@@ -102,11 +110,17 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
         final restoredSession = _meetingProvider!.currentSession;
         if (restoredSession != null && restoredSession.bubbles.isNotEmpty) {
           _speechProvider!.restoreBubbles(restoredSession.bubbles);
+          // Initialize recording start time from restored session
+          _recordingStartedAt = restoredSession.bubbles.isNotEmpty 
+              ? restoredSession.bubbles.first.timestamp 
+              : restoredSession.createdAt;
         } else if (_meetingProvider!.currentSession == null) {
           // Create new session if none exists
           await _meetingProvider!.createNewSession();
           // Clear bubbles for new session
           _speechProvider!.clearTranscript();
+          // Reset recording start time for new session
+          _recordingStartedAt = null;
         }
       }
 
@@ -186,6 +200,8 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
           // It's a new session, clear bubbles
           if (mounted && _speechProvider != null) {
             _speechProvider!.clearTranscript();
+            // Reset recording start time for new session
+            _recordingStartedAt = null;
           }
           return;
         }
@@ -198,12 +214,18 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
               _speechProvider!.bubbles.length != currentSession.bubbles.length) {
             if (mounted && _speechProvider != null) {
               _speechProvider!.restoreBubbles(currentSession.bubbles);
+              // Initialize recording start time from session
+              _recordingStartedAt = currentSession.bubbles.isNotEmpty 
+                  ? currentSession.bubbles.first.timestamp 
+                  : currentSession.createdAt;
             }
           }
         } else {
           // Session has no bubbles - clear any existing bubbles
           if (mounted && _speechProvider != null) {
             _speechProvider!.clearTranscript();
+            // Reset recording start time
+            _recordingStartedAt = null;
           }
         }
       } finally {
@@ -234,15 +256,38 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     super.dispose();
   }
 
+  /// Calculate the recording start time from the current session or bubbles
+  DateTime? _calculateRecordingStartTime() {
+    final currentSession = _meetingProvider?.currentSession;
+    final bubbles = _speechProvider?.bubbles ?? [];
+    
+    // If we have bubbles, use the first bubble's timestamp
+    if (bubbles.isNotEmpty) {
+      return bubbles.first.timestamp;
+    }
+    
+    // Otherwise, use the session's createdAt time
+    if (currentSession != null) {
+      return currentSession.createdAt;
+    }
+    
+    // Fallback to null (will use current time if recording starts fresh)
+    return null;
+  }
+
   void _ensureRecordingClock(SpeechToTextProvider speechProvider) {
     if (speechProvider.isRecording) {
-      _recordingStartedAt ??= DateTime.now();
+      // If recording started time is not set, calculate it from session/bubbles
+      // This ensures that when resuming a session, we continue from where we left off
+      _recordingStartedAt ??= _calculateRecordingStartTime() ?? DateTime.now();
       _recordingTimer ??= Timer.periodic(const Duration(seconds: 1), (_) {
         if (!mounted) return;
         setState(() {});
       });
     } else {
-      _recordingStartedAt = null;
+      // Stop the timer when recording stops
+      // Don't reset _recordingStartedAt here - keep it so if recording resumes,
+      // it continues from the same start time
       _recordingTimer?.cancel();
       _recordingTimer = null;
     }

@@ -12,6 +12,7 @@ class MeetingProvider extends ChangeNotifier {
   final MeetingStorageService _storage = MeetingStorageService();
   AiService? _aiService;
   static const String _currentSessionIdKey = 'current_meeting_session_id';
+  static const String _lastSelectedModeKey = 'last_selected_meeting_mode';
 
   MeetingSession? _currentSession;
   List<MeetingSession> _sessions = [];
@@ -24,6 +25,22 @@ class MeetingProvider extends ChangeNotifier {
 
   MeetingProvider({AiService? aiService}) : _aiService = aiService {
     _restoreCurrentSession();
+    // Also check and log saved mode preference on initialization
+    _logSavedModePreference();
+  }
+  
+  Future<void> _logSavedModePreference() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedMode = prefs.getString(_lastSelectedModeKey);
+      if (savedMode != null && savedMode.isNotEmpty) {
+        print('[MeetingProvider] Initialization: Found saved mode preference: $savedMode');
+      } else {
+        print('[MeetingProvider] Initialization: No saved mode preference found');
+      }
+    } catch (e) {
+      print('[MeetingProvider] Error checking saved mode preference: $e');
+    }
   }
 
   void setAiService(AiService? aiService) {
@@ -63,6 +80,11 @@ class MeetingProvider extends ChangeNotifier {
         final isMongoObjectId = RegExp(r'^[0-9a-fA-F]{24}$').hasMatch(savedSessionId);
         if (!isMongoObjectId) {
           // It's a timestamp ID (new session), don't try to restore it
+          // But still try to restore the mode preference if available
+          final savedMode = prefs.getString(_lastSelectedModeKey);
+          if (savedMode != null && savedMode.isNotEmpty) {
+            print('[MeetingProvider] Found saved mode preference: $savedMode (session not restored, but mode preference exists)');
+          }
           return;
         }
         
@@ -71,11 +93,30 @@ class MeetingProvider extends ChangeNotifier {
           final session = await _storage.loadSession(savedSessionId);
           if (session != null) {
             _currentSession = session;
+            
+            // Save the mode from restored session as the last selected mode
+            if (session.modeKey != null && session.modeKey.isNotEmpty) {
+              await prefs.setString(_lastSelectedModeKey, session.modeKey);
+              print('[MeetingProvider] Restored session mode: ${session.modeKey}');
+            }
+            
             notifyListeners();
           } else {
             // Session not found, clear the saved ID
             await prefs.remove(_currentSessionIdKey);
           }
+        } else {
+          // No auth token yet, but we can still check for saved mode preference
+          final savedMode = prefs.getString(_lastSelectedModeKey);
+          if (savedMode != null && savedMode.isNotEmpty) {
+            print('[MeetingProvider] Found saved mode preference: $savedMode (waiting for auth token)');
+          }
+        }
+      } else {
+        // No saved session ID, but check for saved mode preference
+        final savedMode = prefs.getString(_lastSelectedModeKey);
+        if (savedMode != null && savedMode.isNotEmpty) {
+          print('[MeetingProvider] Found saved mode preference: $savedMode (no saved session)');
         }
       }
     } catch (e) {
@@ -128,20 +169,43 @@ class MeetingProvider extends ChangeNotifier {
   }
 
   Future<void> createNewSession({String? title, String? modeKey}) async {
+    // If no modeKey provided, use the last selected mode, or default to 'general'
+    String finalModeKey = modeKey ?? 'general';
+    if (modeKey == null) {
+      final prefs = await SharedPreferences.getInstance();
+      final lastMode = prefs.getString(_lastSelectedModeKey);
+      if (lastMode != null && lastMode.isNotEmpty) {
+        finalModeKey = lastMode;
+        print('[MeetingProvider] createNewSession: Using last selected mode: $finalModeKey');
+      } else {
+        print('[MeetingProvider] createNewSession: No saved mode found, using default: general');
+      }
+    } else {
+      print('[MeetingProvider] createNewSession: Using provided mode: $modeKey');
+    }
+    
     final sessionId = DateTime.now().millisecondsSinceEpoch.toString();
     _currentSession = MeetingSession(
       id: sessionId,
       title: title ?? 'Meeting ${DateTime.now().toLocal().toString().substring(0, 16)}',
       createdAt: DateTime.now(),
       bubbles: [],
-      modeKey: modeKey ?? 'general',
+      modeKey: finalModeKey,
     );
     await _saveCurrentSessionId(sessionId);
     notifyListeners();
   }
 
   Future<void> updateCurrentSessionModeKey(String modeKey) async {
-    if (_currentSession == null) return;
+    // Save the selected mode to persist it for future sessions (even if no current session)
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_lastSelectedModeKey, modeKey);
+    print('[MeetingProvider] updateCurrentSessionModeKey: Saved mode preference: $modeKey');
+    
+    if (_currentSession == null) {
+      print('[MeetingProvider] updateCurrentSessionModeKey: No current session, but mode preference saved');
+      return;
+    }
     
     _currentSession = _currentSession!.copyWith(
       modeKey: modeKey,
@@ -153,9 +217,10 @@ class MeetingProvider extends ChangeNotifier {
     if (_currentSession!.id.length == 24) {
       try {
         await _storage.saveSession(_currentSession!);
+        print('[MeetingProvider] updateCurrentSessionModeKey: Auto-saved session with mode: $modeKey');
       } catch (e) {
         // Silently fail - mode will be saved on next manual save
-        print('Failed to auto-save mode: $e');
+        print('[MeetingProvider] Failed to auto-save mode: $e');
       }
     }
   }
@@ -204,6 +269,13 @@ class MeetingProvider extends ChangeNotifier {
       if (session != null) {
         _currentSession = session;
         await _saveCurrentSessionId(sessionId);
+        
+        // Save the mode from loaded session as the last selected mode
+        if (session.modeKey != null && session.modeKey.isNotEmpty) {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString(_lastSelectedModeKey, session.modeKey);
+          print('[MeetingProvider] Saved mode from loaded session: ${session.modeKey}');
+        }
       } else {
         _errorMessage = 'Session not found';
       }
