@@ -123,7 +123,16 @@ class AudioCaptureService {
   }
 
   void dispose() {
-    _audioSubscription?.cancel();
-    _recorder.dispose();
+    try {
+      _audioSubscription?.cancel();
+      _audioSubscription = null;
+    } catch (e) {
+      print('[AudioCaptureService] Error canceling subscription: $e');
+    }
+    try {
+      _recorder.dispose();
+    } catch (e) {
+      print('[AudioCaptureService] Error disposing recorder: $e');
+    }
   }
 }

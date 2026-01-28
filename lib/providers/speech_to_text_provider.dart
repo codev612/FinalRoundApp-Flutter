@@ -14,8 +14,10 @@ class SpeechToTextProvider extends ChangeNotifier {
   AiService? _aiService;
   Timer? _mockAudioTimer;
   Timer? _systemAudioPollTimer;
+  StreamSubscription? _transcriptSubscription;
   bool _isSystemAudioCapturing = false;
   bool _useMic = true;
+  bool _isStopping = false; // Prevent concurrent stop operations
   
   // Track when last system final transcript was received to suppress mic echo
   DateTime? _lastSystemFinalTime;
@@ -28,10 +30,11 @@ class SpeechToTextProvider extends ChangeNotifier {
   
   // Track when recording started to suppress mic initially (prevent early duplicates)
   DateTime? _recordingStartTime;
-  static const _initialSuppressionWindow = Duration(seconds: 8); // Suppress mic for first 8 seconds when system audio is active
+  static const _initialSuppressionWindow = Duration(seconds: 3); // Suppress mic for first 3 seconds when system audio is active
   
   bool _isRecording = false;
   bool _isConnected = false;
+  bool _isDisposed = false;
   final List<TranscriptBubble> _bubbles = <TranscriptBubble>[];
   String _errorMessage = '';
   int _audioFrameCount = 0;
@@ -250,8 +253,15 @@ class SpeechToTextProvider extends ChangeNotifier {
     } catch (_) {}
     _aiService = AiService(httpBaseUrl: httpBaseUrl, aiWsUrl: aiWsUrl, authToken: authToken);
     
-    _transcriptionService!.transcriptStream.listen(
+    // Cancel any existing subscription first
+    _transcriptSubscription?.cancel();
+    _transcriptSubscription = _transcriptionService!.transcriptStream.listen(
       (result) {
+        // Check if recording is still active before processing
+        if (!_isRecording) {
+          return;
+        }
+        
         print('[SpeechToTextProvider] Received transcript - raw source: "${result.source}", text: "${result.text.substring(0, result.text.length > 50 ? 50 : result.text.length)}..."');
         final source = switch (result.source) {
           'mic' => TranscriptSource.mic,
@@ -270,6 +280,10 @@ class SpeechToTextProvider extends ChangeNotifier {
           print('[SpeechToTextProvider] System final transcript received, suppressing mic audio for ${_micSuppressionWindow.inMilliseconds}ms');
         }
         
+        // Double-check recording state before processing
+        if (!_isRecording) {
+          return;
+        }
 
         if (result.isFinal) {
           _upsertFinalBubble(source: source, text: result.text);
@@ -277,9 +291,17 @@ class SpeechToTextProvider extends ChangeNotifier {
           _upsertDraftBubble(source: source, text: result.text);
         }
 
-        notifyListeners();
+        // Only notify if still recording
+        if (_isRecording) {
+          notifyListeners();
+        }
       },
       onError: (error) {
+        // Only process errors if recording is active
+        if (!_isRecording) {
+          return;
+        }
+        
         _errorMessage = error.toString();
         // If recording was active, stop it when WebSocket error occurs
         if (_isRecording) {
@@ -293,11 +315,15 @@ class SpeechToTextProvider extends ChangeNotifier {
               // Force stop if stopRecording fails
               _isRecording = false;
               _isConnected = false;
-              notifyListeners();
+              if (!_isDisposed) {
+                notifyListeners();
+              }
             }
           });
         } else {
-          notifyListeners();
+          if (!_isDisposed) {
+            notifyListeners();
+          }
         }
       },
     );
@@ -418,6 +444,87 @@ class SpeechToTextProvider extends ChangeNotifier {
       // Connect to WebSocket
       await _transcriptionService?.connect();
       _isConnected = true;
+      
+      // Re-establish transcript stream subscription
+      // This is needed when resuming a meeting after stopping (subscription was cancelled)
+      _transcriptSubscription?.cancel();
+      _transcriptSubscription = _transcriptionService!.transcriptStream.listen(
+          (result) {
+            // Check if recording is still active and not stopping before processing
+            if (!_isRecording || _isStopping || _isDisposed) {
+              return;
+            }
+            
+            print('[SpeechToTextProvider] Received transcript - raw source: "${result.source}", text: "${result.text.substring(0, result.text.length > 50 ? 50 : result.text.length)}..."');
+            final source = switch (result.source) {
+              'mic' => TranscriptSource.mic,
+              'system' => TranscriptSource.system,
+              _ => TranscriptSource.unknown,
+            };
+            print('[SpeechToTextProvider] Mapped to TranscriptSource: $source');
+
+            // Track when system final transcript is received to suppress mic echo
+            if (result.isFinal && source == TranscriptSource.system) {
+              final now = DateTime.now();
+              _lastSystemFinalTime = now;
+              _recentSystemTranscripts.add(now);
+              // Clean up old entries
+              _recentSystemTranscripts.removeWhere((time) => now.difference(time) > _systemActivityWindow);
+              print('[SpeechToTextProvider] System final transcript received, suppressing mic audio for ${_micSuppressionWindow.inMilliseconds}ms');
+            }
+            
+            // Double-check recording state before processing
+            if (!_isRecording || _isStopping || _isDisposed) {
+              return;
+            }
+
+            if (result.isFinal) {
+              _upsertFinalBubble(source: source, text: result.text);
+            } else {
+              _upsertDraftBubble(source: source, text: result.text);
+            }
+
+            // Only notify if still recording and not stopping
+            if (_isRecording && !_isStopping && !_isDisposed) {
+              try {
+                notifyListeners();
+              } catch (e) {
+                print('[SpeechToTextProvider] Error in notifyListeners (transcript): $e');
+              }
+            }
+          },
+          onError: (error) {
+            // Only process errors if recording is active and not stopping
+            if (!_isRecording || _isStopping || _isDisposed) {
+              return;
+            }
+            
+            _errorMessage = error.toString();
+            // If recording was active, stop it when WebSocket error occurs
+            if (_isRecording) {
+              print('[SpeechToTextProvider] WebSocket error during recording, stopping recording');
+              // Stop recording asynchronously to avoid blocking
+              Future.microtask(() async {
+                try {
+                  await stopRecording();
+                } catch (e) {
+                  print('[SpeechToTextProvider] Error stopping recording after WebSocket error: $e');
+                  // Force stop if stopRecording fails
+                  _isRecording = false;
+                  _isConnected = false;
+                  if (!_isDisposed) {
+                    notifyListeners();
+                  }
+                }
+              });
+            } else {
+              if (!_isDisposed) {
+                notifyListeners();
+              }
+            }
+          },
+        );
+      print('[SpeechToTextProvider] Transcript stream subscription re-established');
 
       // Start system audio capture on Windows (best-effort).
       if (!kIsWeb && Platform.isWindows) {
@@ -433,6 +540,11 @@ class SpeechToTextProvider extends ChangeNotifier {
           _systemAudioPollTimer = Timer.periodic(
             const Duration(milliseconds: 50),
             (_) {
+              // Check if recording is still active and not stopping before processing
+              if (!_isRecording || _isStopping || _transcriptionService == null) {
+                return;
+              }
+              
               // Note: We don't suppress system audio when mic finalizes because:
               // 1. System audio is typically the original source (video calls, apps, etc.)
               // 2. Suppressing system audio causes delays in transcription
@@ -440,8 +552,18 @@ class SpeechToTextProvider extends ChangeNotifier {
               
               // Pull ~50ms at 16kHz mono PCM16 => 16000*0.05*2 = 1600 bytes
               WindowsAudioService.getSystemAudioFrame(lengthBytes: 1600).then((frame) {
+                // Double-check state after async operation - must check _isStopping too
+                if (!_isRecording || _isStopping || _transcriptionService == null) {
+                  return;
+                }
                 if (frame.isEmpty) return;
-                _transcriptionService?.sendAudio(frame, source: 'system');
+                try {
+                  _transcriptionService?.sendAudio(frame, source: 'system');
+                } catch (e) {
+                  print('[SpeechToTextProvider] Error sending system audio: $e');
+                }
+              }).catchError((error) {
+                print('[SpeechToTextProvider] Error getting system audio frame: $error');
               });
             },
           );
@@ -464,8 +586,8 @@ class SpeechToTextProvider extends ChangeNotifier {
         // Initialize audio capture
         _audioCaptureService = AudioCaptureService(
           onAudioData: (audioData) {
-            // Only send mic audio if useMic is still true
-            if (!_useMic) return;
+            // Only send mic audio if useMic is still true, recording is active, and not stopping
+            if (!_useMic || !_isRecording || _isStopping) return;
             
             final now = DateTime.now();
             
@@ -533,7 +655,14 @@ class SpeechToTextProvider extends ChangeNotifier {
             if (_audioFrameCount % 10 == 0) {
               print('[SpeechToTextProvider] Audio frame #$_audioFrameCount: ${audioData.length} bytes');
             }
-            _transcriptionService?.sendAudio(audioData, source: 'mic');
+            // Final check before sending - must not be stopping
+            if (!_isStopping && _transcriptionService != null) {
+              try {
+                _transcriptionService?.sendAudio(audioData, source: 'mic');
+              } catch (e) {
+                print('[SpeechToTextProvider] Error sending mic audio: $e');
+              }
+            }
           },
         );
 
@@ -592,7 +721,8 @@ class SpeechToTextProvider extends ChangeNotifier {
         
         _audioCaptureService = AudioCaptureService(
           onAudioData: (audioData) {
-            if (!_useMic) return;
+            // Only send mic audio if useMic is still true, recording is active, and not stopping
+            if (!_useMic || !_isRecording || _isStopping) return;
             
             final now = DateTime.now();
             
@@ -655,7 +785,14 @@ class SpeechToTextProvider extends ChangeNotifier {
             if (_audioFrameCount % 10 == 0) {
               print('[SpeechToTextProvider] Audio frame #$_audioFrameCount: ${audioData.length} bytes');
             }
-            _transcriptionService?.sendAudio(audioData, source: 'mic');
+            // Final check before sending - must not be stopping
+            if (!_isStopping && _isRecording && _transcriptionService != null) {
+              try {
+                _transcriptionService?.sendAudio(audioData, source: 'mic');
+              } catch (e) {
+                print('[SpeechToTextProvider] Error sending mic audio: $e');
+              }
+            }
           },
         );
         
@@ -693,39 +830,129 @@ class SpeechToTextProvider extends ChangeNotifier {
   }
 
   Future<void> stopRecording() async {
+    // Prevent concurrent stop operations
+    if (_isStopping) {
+      print('[SpeechToTextProvider] Stop already in progress, ignoring duplicate call');
+      return;
+    }
+    
+    _isStopping = true;
     try {
       print('[SpeechToTextProvider] Stopping recording...');
-      _mockAudioTimer?.cancel();
-      _mockAudioTimer = null;
+      
+      // STEP 1: Set all flags to stop callbacks FIRST
+      _isRecording = false;
+      _isConnected = false;
+      
+      // STEP 2: Cancel ALL timers immediately to stop periodic callbacks
+      try {
+        _mockAudioTimer?.cancel();
+        _mockAudioTimer = null;
+      } catch (e) {
+        print('[SpeechToTextProvider] Error canceling mock audio timer: $e');
+      }
 
-      _systemAudioPollTimer?.cancel();
-      _systemAudioPollTimer = null;
+      // Cancel system audio poll timer - this is critical to stop getSystemAudioFrame calls
+      try {
+        _systemAudioPollTimer?.cancel();
+        _systemAudioPollTimer = null;
+      } catch (e) {
+        print('[SpeechToTextProvider] Error canceling system audio poll timer: $e');
+      }
+      
+      // Give callbacks time to see the flags and stop processing
+      await Future.delayed(const Duration(milliseconds: 100));
+      
+      // STEP 3: Cancel transcript subscription to stop processing incoming messages
+      try {
+        _transcriptSubscription?.cancel();
+        _transcriptSubscription = null;
+      } catch (e) {
+        print('[SpeechToTextProvider] Error canceling transcript subscription: $e');
+      }
+      
+      // STEP 4: Stop audio capture services (mic first, then system)
+      try {
+        await _audioCaptureService?.stopCapturing();
+      } catch (e) {
+        print('[SpeechToTextProvider] Error stopping audio capture: $e');
+      }
+      
+      // Stop system audio capture (native Windows service)
       if (!kIsWeb && Platform.isWindows && _isSystemAudioCapturing) {
-        await WindowsAudioService.stopSystemAudioCapture();
+        try {
+          await WindowsAudioService.stopSystemAudioCapture();
+        } catch (e) {
+          print('[SpeechToTextProvider] Error stopping system audio capture: $e');
+        }
       }
       _isSystemAudioCapturing = false;
       
-      // Reset suppression timestamps
+      // Wait for audio services to fully stop
+      await Future.delayed(const Duration(milliseconds: 100));
+      
+      // STEP 5: Dispose audio capture service
+      try {
+        _audioCaptureService?.dispose();
+      } catch (e) {
+        print('[SpeechToTextProvider] Error disposing audio capture service: $e');
+      }
+      _audioCaptureService = null;
+      
+      // STEP 6: Disconnect from transcription service (WebSocket)
+      // Do this last after all audio is stopped
+      try {
+        _transcriptionService?.disconnect();
+        // Wait for WebSocket to close
+        await Future.delayed(const Duration(milliseconds: 100));
+      } catch (e) {
+        print('[SpeechToTextProvider] Error disconnecting transcription service: $e');
+      }
+      
+      // STEP 7: Reset all state
       _lastSystemFinalTime = null;
       _recentSystemTranscripts.clear();
       _recordingStartTime = null;
-      
-      // Stop audio capture
-      await _audioCaptureService?.stopCapturing();
-      _audioCaptureService?.dispose();
-      _audioCaptureService = null;
-      
-      // Disconnect from transcription
-      _transcriptionService?.disconnect();
-      
-      _isRecording = false;
-      _isConnected = false;
       print('[SpeechToTextProvider] Recording stopped. Processed $_audioFrameCount audio frames');
-      notifyListeners();
-    } catch (e) {
+      
+      // Final state update - defer to next frame to avoid crashes during rebuild
+      // Use a longer delay to ensure everything is settled
+      if (!_isDisposed) {
+        Future.delayed(const Duration(milliseconds: 300), () {
+          if (!_isDisposed && !_isStopping) {
+            try {
+              notifyListeners();
+            } catch (e) {
+              print('[SpeechToTextProvider] Error in notifyListeners (deferred): $e');
+            }
+          }
+        });
+      }
+    } catch (e, stackTrace) {
       _errorMessage = 'Failed to stop recording: $e';
       print('[SpeechToTextProvider] Error stopping: $e');
-      notifyListeners();
+      print('[SpeechToTextProvider] Stack trace: $stackTrace');
+      // Ensure state is reset even on error
+      _isRecording = false;
+      _isConnected = false;
+      if (!_isDisposed) {
+        try {
+          // Defer notification to avoid crashes during error handling
+          Future.microtask(() {
+            if (!_isDisposed && !_isStopping) {
+              try {
+                notifyListeners();
+              } catch (notifyError) {
+                print('[SpeechToTextProvider] Error in notifyListeners (error handler, deferred): $notifyError');
+              }
+            }
+          });
+        } catch (e) {
+          print('[SpeechToTextProvider] Error scheduling notifyListeners (error handler): $e');
+        }
+      }
+    } finally {
+      _isStopping = false;
     }
   }
 
@@ -745,7 +972,10 @@ class SpeechToTextProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    _isDisposed = true;
     _mockAudioTimer?.cancel();
+    _systemAudioPollTimer?.cancel();
+    _transcriptSubscription?.cancel();
     _audioCaptureService?.dispose();
     _transcriptionService?.dispose();
     _aiService?.dispose();

@@ -6,6 +6,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 class TranscriptionService {
   WebSocketChannel? _channel;
+  StreamSubscription? _channelSubscription;
   bool _disconnecting = false;
 
   final String serverUrl;
@@ -36,8 +37,15 @@ class TranscriptionService {
       }
       _channel = WebSocketChannel.connect(Uri.parse(wsUrl));
 
-      _channel!.stream.listen(
+      // Cancel any existing subscription first
+      _channelSubscription?.cancel();
+      _channelSubscription = _channel!.stream.listen(
         (message) {
+          // Check if we're disconnecting before processing
+          if (_disconnecting || _channel == null) {
+            return;
+          }
+          
           print('[TranscriptionService] Received: $message');
           final data = jsonDecode(message);
 
@@ -71,11 +79,15 @@ class TranscriptionService {
           }
         },
         onError: (error) {
+          if (_disconnecting) return;
           print('[TranscriptionService] WebSocket error: $error');
-          _transcriptController.addError(error);
+          if (!_transcriptController.isClosed) {
+            _transcriptController.addError(error);
+          }
           disconnect();
         },
         onDone: () {
+          if (_disconnecting) return;
           print('[TranscriptionService] WebSocket closed');
           disconnect();
         },
@@ -125,6 +137,13 @@ class TranscriptionService {
     if (channel == null) return;
 
     _disconnecting = true;
+    
+    // Cancel stream subscription first
+    try {
+      _channelSubscription?.cancel();
+    } catch (_) {}
+    _channelSubscription = null;
+    
     _channel = null; // prevent re-entrancy from onDone/onError
 
     try {

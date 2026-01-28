@@ -19,6 +19,7 @@ class MeetingProvider extends ChangeNotifier {
   bool _isGeneratingSummary = false;
   bool _isGeneratingInsights = false;
   bool _isGeneratingQuestions = false;
+  bool _isDisposed = false;
 
   MeetingProvider({AiService? aiService}) : _aiService = aiService {
     _restoreCurrentSession();
@@ -234,42 +235,83 @@ class MeetingProvider extends ChangeNotifier {
   }
 
   void updateCurrentSessionBubbles(List<TranscriptBubble> bubbles) {
-    if (_currentSession == null) return;
+    if (_currentSession == null || _isDisposed) return;
 
-    _currentSession = _currentSession!.copyWith(
-      bubbles: bubbles,
-      updatedAt: DateTime.now(),
-    );
-    notifyListeners();
-    
-    // Auto-save session when bubbles are updated (debounced)
-    _autoSaveSession();
+    try {
+      _currentSession = _currentSession!.copyWith(
+        bubbles: bubbles,
+        updatedAt: DateTime.now(),
+      );
+      if (!_isDisposed) {
+        try {
+          notifyListeners();
+        } catch (e) {
+          print('[MeetingProvider] Error in notifyListeners: $e');
+        }
+      }
+      
+      // Auto-save session when bubbles are updated (debounced)
+      // Only if not disposed to avoid crashes during cleanup
+      if (!_isDisposed) {
+        try {
+          _autoSaveSession();
+        } catch (e) {
+          print('[MeetingProvider] Error scheduling auto-save: $e');
+        }
+      }
+    } catch (e) {
+      print('[MeetingProvider] Error updating session bubbles: $e');
+      // Don't rethrow - just log the error to prevent crashes
+    }
   }
 
   Timer? _autoSaveTimer;
+  bool _isSaving = false; // Track if save is in progress
+  
   void _autoSaveSession() {
+    // Don't schedule new saves if disposed or already saving
+    if (_isDisposed || _isSaving) return;
+    
     // Debounce auto-save to avoid too many API calls
     _autoSaveTimer?.cancel();
     _autoSaveTimer = Timer(const Duration(seconds: 2), () async {
-      await _saveSessionIfNeeded();
+      if (!_isDisposed && !_isSaving) {
+        await _saveSessionIfNeeded();
+      }
     });
   }
 
   Future<void> _saveSessionIfNeeded() async {
+    // Prevent concurrent saves
+    if (_isSaving || _isDisposed) return;
+    
     if (_currentSession != null && _storage.authToken != null && _storage.authToken!.isNotEmpty) {
+      _isSaving = true;
       try {
         final savedSession = await _storage.saveSession(_currentSession!);
+        
+        // Check if still valid after async operation
+        if (_isDisposed) return;
+        
         if (savedSession.id != null && savedSession.id != _currentSession!.id) {
           // Session ID changed (got MongoDB ObjectId), update it
           _currentSession = savedSession;
           await _saveCurrentSessionId(savedSession.id!);
-          notifyListeners();
+          if (!_isDisposed) {
+            try {
+              notifyListeners();
+            } catch (e) {
+              print('[MeetingProvider] Error in notifyListeners (after save): $e');
+            }
+          }
         } else {
           _currentSession = savedSession;
         }
       } catch (e) {
         // Silently fail auto-save to avoid disrupting user experience
-        print('Auto-save failed: $e');
+        print('[MeetingProvider] Auto-save failed: $e');
+      } finally {
+        _isSaving = false;
       }
     }
   }
@@ -489,6 +531,7 @@ class MeetingProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    _isDisposed = true;
     _autoSaveTimer?.cancel();
     super.dispose();
   }

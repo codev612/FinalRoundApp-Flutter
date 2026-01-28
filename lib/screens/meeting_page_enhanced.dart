@@ -119,15 +119,37 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     if (!mounted) return;
     if (_meetingProvider?.currentSession == null || _speechProvider == null) return;
     
-    // Only update if bubbles actually changed
-    final currentBubbles = _speechProvider!.bubbles;
-    final sessionBubbles = _meetingProvider!.currentSession!.bubbles;
-    if (currentBubbles.length != sessionBubbles.length ||
-        (currentBubbles.isNotEmpty && sessionBubbles.isNotEmpty && 
-         currentBubbles.first.text != sessionBubbles.first.text)) {
-      if (mounted) {
+    try {
+      // Only update if bubbles actually changed
+      final currentBubbles = _speechProvider!.bubbles;
+      final sessionBubbles = _meetingProvider!.currentSession!.bubbles;
+      
+      // More comprehensive comparison: check length, and if lengths match, check content
+      bool hasChanged = false;
+      if (currentBubbles.length != sessionBubbles.length) {
+        hasChanged = true;
+      } else if (currentBubbles.isNotEmpty && sessionBubbles.isNotEmpty) {
+        // Compare all bubbles to detect any changes
+        for (int i = 0; i < currentBubbles.length; i++) {
+          if (i >= sessionBubbles.length ||
+              currentBubbles[i].text != sessionBubbles[i].text ||
+              currentBubbles[i].isDraft != sessionBubbles[i].isDraft ||
+              currentBubbles[i].source != sessionBubbles[i].source) {
+            hasChanged = true;
+            break;
+          }
+        }
+      } else if (currentBubbles.isEmpty != sessionBubbles.isEmpty) {
+        // One is empty, the other is not
+        hasChanged = true;
+      }
+      
+      if (hasChanged && mounted && _meetingProvider?.currentSession != null) {
         _meetingProvider!.updateCurrentSessionBubbles(currentBubbles);
       }
+    } catch (e) {
+      debugPrint('Error in _syncBubblesToSession: $e');
+      // Don't rethrow - just log to prevent crashes
     }
   }
 
@@ -1020,8 +1042,45 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                               IconButton.outlined(
                                 onPressed: () async {
                                   if (!mounted) return;
+                                  
+                                  // Stop recording first, then sync bubbles after
+                                  // This prevents race conditions between stop and sync
+                                  if (!mounted) return;
                                   try {
+                                    // Wait for any in-flight operations to complete before stopping
+                                    await Future.delayed(const Duration(milliseconds: 100));
+                                    
+                                    if (!mounted) return;
                                     await speechProvider.stopRecording();
+                                    
+                                    // Wait a bit more for WebSocket/database operations to settle
+                                    await Future.delayed(const Duration(milliseconds: 300));
+                                    
+                                    // Sync bubbles AFTER stopping (deferred to avoid crashes)
+                                    if (mounted && _meetingProvider?.currentSession != null && _speechProvider != null) {
+                                      // Defer sync to next frame to avoid interfering with stop cleanup
+                                      Future.microtask(() async {
+                                        if (!mounted) return;
+                                        try {
+                                          _isUpdatingBubbles = true;
+                                          final currentBubbles = _speechProvider!.bubbles;
+                                          if (currentBubbles.isNotEmpty && mounted) {
+                                            try {
+                                              _meetingProvider!.updateCurrentSessionBubbles(currentBubbles);
+                                            } catch (syncError) {
+                                              debugPrint('Error syncing bubbles after stop: $syncError');
+                                            }
+                                          }
+                                        } catch (e) {
+                                          debugPrint('Error in bubble sync after stop: $e');
+                                        } finally {
+                                          if (mounted) {
+                                            _isUpdatingBubbles = false;
+                                          }
+                                        }
+                                      });
+                                    }
+                                    
                                     // Don't save automatically - let user save manually to avoid crashes
                                     // Session is auto-saved periodically anyway
                                   } catch (e, stackTrace) {
@@ -1729,8 +1788,45 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                 onInvoke: (_) async {
                   if (speechProvider.isRecording) {
                     if (!mounted) return null;
+                    
+                    // Stop recording first, then sync bubbles after
+                    // This prevents race conditions between stop and sync
+                    if (!mounted) return null;
                     try {
+                      // Wait for any in-flight operations to complete before stopping
+                      await Future.delayed(const Duration(milliseconds: 100));
+                      
+                      if (!mounted) return null;
                       await speechProvider.stopRecording();
+                      
+                      // Wait a bit more for WebSocket/database operations to settle
+                      await Future.delayed(const Duration(milliseconds: 300));
+                      
+                      // Sync bubbles AFTER stopping (deferred to avoid crashes)
+                      if (mounted && _meetingProvider?.currentSession != null && _speechProvider != null) {
+                        // Defer sync to next frame to avoid interfering with stop cleanup
+                        Future.microtask(() async {
+                          if (!mounted) return;
+                          try {
+                            _isUpdatingBubbles = true;
+                            final currentBubbles = _speechProvider!.bubbles;
+                            if (currentBubbles.isNotEmpty && mounted) {
+                              try {
+                                _meetingProvider!.updateCurrentSessionBubbles(currentBubbles);
+                              } catch (syncError) {
+                                debugPrint('Error syncing bubbles after stop: $syncError');
+                              }
+                            }
+                          } catch (e) {
+                            debugPrint('Error in bubble sync after stop: $e');
+                          } finally {
+                            if (mounted) {
+                              _isUpdatingBubbles = false;
+                            }
+                          }
+                        });
+                      }
+                      
                       // Don't save automatically - let user save manually to avoid crashes
                       // Session is auto-saved periodically anyway
                     } catch (e, stackTrace) {
