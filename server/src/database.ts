@@ -882,4 +882,109 @@ export const closeDB = async (): Promise<void> => {
   }
 };
 
+// API Usage Tracking
+export interface ApiUsage {
+  _id?: ObjectId;
+  userId: string;
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  mode: string; // 'reply', 'summary', 'insights', 'questions'
+  timestamp: Date;
+  sessionId?: string; // Optional: link to meeting session
+}
+
+export const getApiUsageCollection = (db: Db): Collection<ApiUsage> => {
+  return db.collection<ApiUsage>('api_usage');
+};
+
+export const saveApiUsage = async (
+  userId: string,
+  model: string,
+  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number },
+  mode: string,
+  sessionId?: string
+): Promise<void> => {
+  await connectDB();
+  const currentDb = db;
+  if (!currentDb) throw new Error('Database not connected');
+  const collection = getApiUsageCollection(currentDb);
+  
+  await collection.insertOne({
+    userId,
+    model,
+    promptTokens: usage.prompt_tokens,
+    completionTokens: usage.completion_tokens,
+    totalTokens: usage.total_tokens,
+    mode,
+    timestamp: new Date(),
+    sessionId,
+  });
+};
+
+export const getUserApiUsage = async (
+  userId: string,
+  startDate?: Date,
+  endDate?: Date
+): Promise<ApiUsage[]> => {
+  await connectDB();
+  const currentDb = db;
+  if (!currentDb) throw new Error('Database not connected');
+  const collection = getApiUsageCollection(currentDb);
+  
+  const query: any = { userId };
+  if (startDate || endDate) {
+    query.timestamp = {};
+    if (startDate) query.timestamp.$gte = startDate;
+    if (endDate) query.timestamp.$lte = endDate;
+  }
+  
+  return collection.find(query).sort({ timestamp: -1 }).toArray();
+};
+
+export const getUserApiUsageStats = async (
+  userId: string,
+  startDate?: Date,
+  endDate?: Date
+): Promise<{
+  totalRequests: number;
+  totalTokens: number;
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
+  byModel: Record<string, { requests: number; tokens: number }>;
+  byMode: Record<string, { requests: number; tokens: number }>;
+}> => {
+  const usage = await getUserApiUsage(userId, startDate, endDate);
+  
+  const stats = {
+    totalRequests: usage.length,
+    totalTokens: 0,
+    totalPromptTokens: 0,
+    totalCompletionTokens: 0,
+    byModel: {} as Record<string, { requests: number; tokens: number }>,
+    byMode: {} as Record<string, { requests: number; tokens: number }>,
+  };
+  
+  for (const record of usage) {
+    stats.totalTokens += record.totalTokens;
+    stats.totalPromptTokens += record.promptTokens;
+    stats.totalCompletionTokens += record.completionTokens;
+    
+    if (!stats.byModel[record.model]) {
+      stats.byModel[record.model] = { requests: 0, tokens: 0 };
+    }
+    stats.byModel[record.model].requests++;
+    stats.byModel[record.model].tokens += record.totalTokens;
+    
+    if (!stats.byMode[record.mode]) {
+      stats.byMode[record.mode] = { requests: 0, tokens: 0 };
+    }
+    stats.byMode[record.mode].requests++;
+    stats.byMode[record.mode].tokens += record.totalTokens;
+  }
+  
+  return stats;
+};
+
 export default { connectDB, closeDB, getUsersCollection };

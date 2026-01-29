@@ -26,7 +26,7 @@ Future<void> initSystemTray() async {
     await systemTray.initSystemTray(
       title: "FinalRound",
       iconPath: "assets/app_icon.ico",
-      toolTip: "FinalRound - Speech to Text",
+      toolTip: "FinalRound - AI Meeting Assistant",
     );
     
     // Create tray menu (shown on right-click)

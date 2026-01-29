@@ -822,11 +822,8 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
         },
         itemBuilder: (context) => const [
           PopupMenuItem(value: 'gpt-5.2', child: Text('GPT-5.2')),
-          PopupMenuItem(value: 'gpt-5.2-pro', child: Text('GPT-5.2 Pro')),
           PopupMenuItem(value: 'gpt-5', child: Text('GPT-5')),
           PopupMenuItem(value: 'gpt-5.1', child: Text('GPT-5.1')),
-          PopupMenuItem(value: 'gpt-5-mini', child: Text('GPT-5 mini')),
-          PopupMenuItem(value: 'gpt-5-nano', child: Text('GPT-5 nano')),
           PopupMenuItem(value: 'gpt-4.1', child: Text('GPT-4.1')),
           PopupMenuItem(value: 'gpt-4.1-mini', child: Text('GPT-4.1 mini')),
           PopupMenuDivider(),

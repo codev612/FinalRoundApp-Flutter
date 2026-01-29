@@ -25,6 +25,9 @@ import {
   getQuestionTemplates,
   saveQuestionTemplates,
   deleteQuestionTemplate,
+  saveApiUsage,
+  getUserApiUsage,
+  getUserApiUsageStats,
   MeetingSession,
 } from './database.js';
 import { fileURLToPath } from 'url';
@@ -388,6 +391,50 @@ app.delete('/api/question-templates/:id', authenticate, async (req: AuthRequest,
   }
 });
 
+// API Usage endpoints (protected)
+app.get('/api/usage', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const startDate = req.query.startDate ? new Date(req.query.startDate as string) : undefined;
+    const endDate = req.query.endDate ? new Date(req.query.endDate as string) : undefined;
+    
+    const stats = await getUserApiUsageStats(userId, startDate, endDate);
+    res.json(stats);
+  } catch (error: any) {
+    console.error('Error fetching API usage:', error);
+    res.status(500).json({ error: error.message || 'Failed to fetch API usage' });
+  }
+});
+
+app.get('/api/usage/details', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const startDate = req.query.startDate ? new Date(req.query.startDate as string) : undefined;
+    const endDate = req.query.endDate ? new Date(req.query.endDate as string) : undefined;
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
+    
+    const usage = await getUserApiUsage(userId, startDate, endDate);
+    const limited = usage.slice(0, limit);
+    
+    res.json({
+      usage: limited.map(u => ({
+        id: u._id?.toString(),
+        model: u.model,
+        promptTokens: u.promptTokens,
+        completionTokens: u.completionTokens,
+        totalTokens: u.totalTokens,
+        mode: u.mode,
+        timestamp: u.timestamp,
+        sessionId: u.sessionId,
+      })),
+      total: usage.length,
+    });
+  } catch (error: any) {
+    console.error('Error fetching API usage details:', error);
+    res.status(500).json({ error: error.message || 'Failed to fetch API usage details' });
+  }
+});
+
 const openai = process.env.OPENAI_API_KEY
   ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
   : null;
@@ -507,6 +554,7 @@ app.post('/ai/respond', authenticate, async (req: AuthRequest, res: Response) =>
     }
     const model = modelText.length > 0 ? modelText : (process.env.OPENAI_MODEL || 'gpt-4o-mini');
     const maxTokens = requestMode === 'insights' ? 600 : requestMode === 'questions' ? 300 : 400;
+    const userId = req.user!.userId;
 
     const completion = await openai.chat.completions.create({
       model,
@@ -516,9 +564,32 @@ app.post('/ai/respond', authenticate, async (req: AuthRequest, res: Response) =>
       ],
       max_completion_tokens: maxTokens,
       temperature: 0.2,
+      user: userId, // Track usage per user
     });
 
     const text = completion?.choices?.[0]?.message?.content ?? '';
+    
+    // Capture and store usage
+    if (completion.usage) {
+      try {
+        const sessionId = req.body.sessionId as string | undefined;
+        await saveApiUsage(
+          userId,
+          model,
+          {
+            prompt_tokens: completion.usage.prompt_tokens,
+            completion_tokens: completion.usage.completion_tokens,
+            total_tokens: completion.usage.total_tokens,
+          },
+          requestMode,
+          sessionId
+        );
+      } catch (usageError) {
+        // Log but don't fail the request if usage tracking fails
+        console.error('Failed to save API usage:', usageError);
+      }
+    }
+    
     return res.json({ text });
   } catch (error: any) {
     console.error('AI respond error:', error);
@@ -993,10 +1064,13 @@ aiWss.on('connection', (ws: WebSocket) => {
       }
       const model = modelText.length > 0 ? modelText : (process.env.OPENAI_MODEL || 'gpt-4o-mini');
       const maxTokens = requestMode === 'insights' ? 600 : requestMode === 'questions' ? 300 : 400;
+      const authWs = ws as AuthenticatedWebSocket;
+      const userId = authWs.user?.userId ?? '';
 
       send({ type: 'ai_start', requestId });
 
       let fullText = '';
+      let usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null = null;
       try {
         const stream = await openai.chat.completions.create({
           model,
@@ -1007,14 +1081,43 @@ aiWss.on('connection', (ws: WebSocket) => {
           max_completion_tokens: maxTokens,
           temperature: 0.2,
           stream: true,
+          stream_options: { include_usage: true }, // Include usage in final chunk
+          user: userId, // Track usage per user
         });
 
         for await (const part of stream) {
           if (cancelled || currentRequestId !== requestId) break;
+          
+          // Check for usage in the final chunk
+          if (part.usage) {
+            usage = {
+              prompt_tokens: part.usage.prompt_tokens,
+              completion_tokens: part.usage.completion_tokens,
+              total_tokens: part.usage.total_tokens,
+            };
+          }
+          
           const delta = part?.choices?.[0]?.delta?.content ?? '';
           if (delta) {
             fullText += delta;
             send({ type: 'ai_delta', requestId, delta });
+          }
+        }
+
+        // Save usage if available
+        if (usage && userId) {
+          try {
+            const sessionId = data.sessionId as string | undefined;
+            await saveApiUsage(
+              userId,
+              model,
+              usage,
+              requestMode,
+              sessionId
+            );
+          } catch (usageError) {
+            // Log but don't fail the request if usage tracking fails
+            console.error('Failed to save API usage:', usageError);
           }
         }
 
