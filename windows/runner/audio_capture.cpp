@@ -141,17 +141,29 @@ AudioCapture::~AudioCapture() {
 }
 
 bool AudioCapture::StartSystemAudio() {
-  if (!is_initialized_) {
-    if (!InitializeWASAPI()) {
-      std::cerr << "[AudioCapture] Failed to initialize WASAPI" << std::endl;
-      return false;
-    }
-    is_initialized_ = true;
+  // IMPORTANT:
+  // The default render device can change during a meeting (headset unplug/replug),
+  // which invalidates the existing loopback endpoint. To recover reliably, always
+  // reinitialize WASAPI on (re)start so we bind to the current default device.
+  StopSystemAudio();
+  CleanupWASAPI();
+  is_initialized_ = false;
+
+  if (!InitializeWASAPI()) {
+    std::cerr << "[AudioCapture] Failed to initialize WASAPI" << std::endl;
+    return false;
   }
+  is_initialized_ = true;
   
   if (!audio_event_) {
     std::cerr << "[AudioCapture] Audio event handle is missing" << std::endl;
     return false;
+  }
+
+  // Clear any buffered audio from a previous run.
+  {
+    std::lock_guard<std::mutex> lock(frames_mutex_);
+    audio_bytes_.clear();
   }
 
   is_capturing_ = true;
@@ -175,6 +187,11 @@ void AudioCapture::StopSystemAudio() {
   if (is_capturing_) {
     is_capturing_ = false;
     
+    // Wake the capture thread immediately (it may be blocked waiting on the event).
+    if (audio_event_) {
+      SetEvent(audio_event_);
+    }
+
     if (audio_client_) {
       audio_client_->Stop();
     }
@@ -210,8 +227,10 @@ std::vector<uint8_t> AudioCapture::GetSystemAudioFrame(size_t requested_bytes) {
 }
 
 bool AudioCapture::InitializeWASAPI() {
-  // Initialize COM library
-  CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  // Initialize COM library (may already be initialized by Flutter as STA).
+  // If CoInitializeEx returns RPC_E_CHANGED_MODE, proceed but DO NOT call CoUninitialize.
+  const HRESULT comHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  com_initialized_ = (comHr == S_OK || comHr == S_FALSE);
   
   // Create device enumerator
   HRESULT hr = CoCreateInstance(
@@ -220,12 +239,20 @@ bool AudioCapture::InitializeWASAPI() {
   
   if (FAILED(hr)) {
     std::cerr << "[AudioCapture] Failed to create device enumerator" << std::endl;
+    if (com_initialized_) {
+      CoUninitialize();
+      com_initialized_ = false;
+    }
     return false;
   }
   
   // Find the default render endpoint (speaker) for WASAPI loopback.
   if (FAILED(FindLoopbackDevice())) {
     std::cerr << "[AudioCapture] Failed to find default render device for loopback." << std::endl;
+    if (com_initialized_) {
+      CoUninitialize();
+      com_initialized_ = false;
+    }
     return false;
   }
   
@@ -235,6 +262,10 @@ bool AudioCapture::InitializeWASAPI() {
   
   if (FAILED(hr)) {
     std::cerr << "[AudioCapture] Failed to activate audio client" << std::endl;
+    if (com_initialized_) {
+      CoUninitialize();
+      com_initialized_ = false;
+    }
     return false;
   }
   
@@ -247,6 +278,10 @@ bool AudioCapture::InitializeWASAPI() {
   hr = audio_client_->GetMixFormat(&capture_format_);
   if (FAILED(hr) || capture_format_ == nullptr) {
     std::cerr << "[AudioCapture] Failed to get endpoint mix format" << std::endl;
+    if (com_initialized_) {
+      CoUninitialize();
+      com_initialized_ = false;
+    }
     return false;
   }
 
@@ -262,6 +297,10 @@ bool AudioCapture::InitializeWASAPI() {
   
   if (FAILED(hr)) {
     std::cerr << "[AudioCapture] Failed to initialize audio client" << std::endl;
+    if (com_initialized_) {
+      CoUninitialize();
+      com_initialized_ = false;
+    }
     return false;
   }
 
@@ -273,6 +312,10 @@ bool AudioCapture::InitializeWASAPI() {
   hr = audio_client_->SetEventHandle(audio_event_);
   if (FAILED(hr)) {
     std::cerr << "[AudioCapture] Failed to set event handle" << std::endl;
+    if (com_initialized_) {
+      CoUninitialize();
+      com_initialized_ = false;
+    }
     return false;
   }
   
@@ -281,10 +324,13 @@ bool AudioCapture::InitializeWASAPI() {
   
   if (FAILED(hr)) {
     std::cerr << "[AudioCapture] Failed to get capture client" << std::endl;
+    if (com_initialized_) {
+      CoUninitialize();
+      com_initialized_ = false;
+    }
     return false;
   }
 
-  std::cout << "[AudioCapture] WASAPI initialized successfully" << std::endl;
   return true;
 }
 
@@ -320,13 +366,20 @@ void AudioCapture::CleanupWASAPI() {
     device_enumerator_->Release();
     device_enumerator_ = nullptr;
   }
-  
-  CoUninitialize();
+
+  if (com_initialized_) {
+    CoUninitialize();
+    com_initialized_ = false;
+  }
 }
 
 HRESULT AudioCapture::FindLoopbackDevice() {
   // Use default render endpoint (speakers/headphones). Loopback flag will capture
   // what is being played through this endpoint.
+  if (loopback_device_) {
+    loopback_device_->Release();
+    loopback_device_ = nullptr;
+  }
   HRESULT hr = device_enumerator_->GetDefaultAudioEndpoint(eRender, eConsole, &loopback_device_);
   if (FAILED(hr)) {
     std::cerr << "[AudioCapture] Failed to get default render endpoint" << std::endl;
@@ -339,12 +392,17 @@ void AudioCapture::CaptureThreadProc() {
   // COM must be initialized per-thread before using COM interfaces.
   CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   
-  const DWORD max_wait = 10000; // 10 seconds timeout
+  // Keep timeout short so StopSystemAudio doesn't block UI for seconds.
+  const DWORD max_wait = 200; // ms
   
   while (is_capturing_) {
     DWORD wait_result = WaitForSingleObject(audio_event_, max_wait);
     
     if (wait_result == WAIT_OBJECT_0) {
+      if (!is_capturing_) break;
+      if (!capture_client_ || !capture_format_) {
+        continue;
+      }
       UINT32 next_packet_size = 0;
       
       while (SUCCEEDED(capture_client_->GetNextPacketSize(&next_packet_size)) && 
@@ -356,7 +414,7 @@ void AudioCapture::CaptureThreadProc() {
         HRESULT hr = capture_client_->GetBuffer(&buffer, &frames_read, &flags, nullptr, nullptr);
         
         if (SUCCEEDED(hr)) {
-          if (capture_format_ == nullptr) {
+          if (!capture_format_) {
             capture_client_->ReleaseBuffer(frames_read);
             continue;
           }
@@ -398,6 +456,10 @@ void AudioCapture::CaptureThreadProc() {
           }
 
           capture_client_->ReleaseBuffer(frames_read);
+        } else {
+          // Common when device changes while capturing.
+          // Just break and let the outer loop continue (StopSystemAudio or restart will handle reinit).
+          break;
         }
       }
     }

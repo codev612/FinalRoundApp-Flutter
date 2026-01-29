@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'dart:async';
 import 'dart:io' show Platform;
@@ -16,11 +17,21 @@ class SpeechToTextProvider extends ChangeNotifier {
   Timer? _systemAudioPollTimer;
   StreamSubscription? _transcriptSubscription;
   bool _isSystemAudioCapturing = false;
-  bool _useMic = true;
+  bool _useMic = false;
   bool _isStopping = false; // Prevent concurrent stop operations
+
+  // System-audio watchdog (Windows loopback can stall on device changes)
+  DateTime? _lastSystemAudioFrameAt;
+  bool _hadSystemAudioFramesThisRun = false;
+  bool _systemAudioRestartInProgress = false;
+  DateTime? _lastSystemAudioRestartAt;
+  int _systemAudioRestartAttempts = 0;
+  Timer? _systemAudioRecoveryTimer;
+  bool _systemAudioRecoveryNotified = false;
   
   // Track when last system final transcript was received to suppress mic echo
   DateTime? _lastSystemFinalTime;
+  DateTime? _lastSystemTranscriptTime;
   // Increased window for gaming headphones (echo can be delayed)
   static const _micSuppressionWindow = Duration(milliseconds: 3000);
   
@@ -511,6 +522,24 @@ class SpeechToTextProvider extends ChangeNotifier {
     }
   }
 
+  String _friendlyMicError(Object e) {
+    if (e is PlatformException) {
+      final msg = (e.message ?? '').toLowerCase();
+      if (msg.contains('no audio recording device')) {
+        return 'No microphone was found. Reconnect your headset/mic, or uncheck “Use mic” to continue with system audio only.';
+      }
+      if (msg.contains('not found')) {
+        return 'Microphone device not found. Reconnect your headset/mic and try again.';
+      }
+    }
+    final text = e.toString();
+    // Avoid showing raw PlatformException noise when possible.
+    if (text.contains('PlatformException')) {
+      return 'Microphone error. Try reconnecting your headset/mic, then restart mic.';
+    }
+    return 'Microphone error: $text';
+  }
+
   Future<void> startRecording({bool clearExisting = false, bool useMic = true}) async {
     try {
       print('[SpeechToTextProvider] Starting recording... (useMic: $useMic)');
@@ -518,9 +547,20 @@ class SpeechToTextProvider extends ChangeNotifier {
       _audioFrameCount = 0;
       _isSystemAudioCapturing = false;
       _useMic = useMic;
+
+      // Reset system-audio watchdog
+      _lastSystemAudioFrameAt = null;
+      _hadSystemAudioFramesThisRun = false;
+      _systemAudioRestartInProgress = false;
+      _lastSystemAudioRestartAt = null;
+      _systemAudioRestartAttempts = 0;
+      _systemAudioRecoveryTimer?.cancel();
+      _systemAudioRecoveryTimer = null;
+      _systemAudioRecoveryNotified = false;
       
       // Reset suppression timestamps when starting recording
       _lastSystemFinalTime = null;
+      _lastSystemTranscriptTime = null;
       _recentSystemTranscripts.clear();
       
       // Set recording start time IMMEDIATELY at the start
@@ -538,6 +578,12 @@ class SpeechToTextProvider extends ChangeNotifier {
       // Connect to WebSocket
       await _transcriptionService?.connect();
       _isConnected = true;
+
+      // Mark recording active early so system-audio polling can work even if mic fails to start.
+      _isRecording = true;
+      if (!_isDisposed) {
+        notifyListeners();
+      }
       
       // Re-establish transcript stream subscription
       // This is needed when resuming a meeting after stopping (subscription was cancelled)
@@ -549,22 +595,21 @@ class SpeechToTextProvider extends ChangeNotifier {
               return;
             }
             
-            print('[SpeechToTextProvider] Received transcript - raw source: "${result.source}", text: "${result.text.substring(0, result.text.length > 50 ? 50 : result.text.length)}..."');
             final source = switch (result.source) {
               'mic' => TranscriptSource.mic,
               'system' => TranscriptSource.system,
               _ => TranscriptSource.unknown,
             };
-            print('[SpeechToTextProvider] Mapped to TranscriptSource: $source');
 
-            // Track when system final transcript is received to suppress mic echo
-            if (result.isFinal && source == TranscriptSource.system) {
+            // Track system transcript timing (interim + final) to suppress mic echo.
+            if (source == TranscriptSource.system) {
               final now = DateTime.now();
-              _lastSystemFinalTime = now;
+              _lastSystemTranscriptTime = now;
               _recentSystemTranscripts.add(now);
-              // Clean up old entries
               _recentSystemTranscripts.removeWhere((time) => now.difference(time) > _systemActivityWindow);
-              print('[SpeechToTextProvider] System final transcript received, suppressing mic audio for ${_micSuppressionWindow.inMilliseconds}ms');
+              if (result.isFinal) {
+                _lastSystemFinalTime = now;
+              }
             }
             
             // Double-check recording state before processing
@@ -622,54 +667,10 @@ class SpeechToTextProvider extends ChangeNotifier {
 
       // Start system audio capture on Windows (best-effort).
       if (!kIsWeb && Platform.isWindows) {
-        final started = await WindowsAudioService.startSystemAudioCapture();
-        _isSystemAudioCapturing = started;
-        
-        if (started) {
-          print('[SpeechToTextProvider] System audio capture started, initial mic suppression active');
-        }
-        
-        if (started) {
-          _systemAudioPollTimer?.cancel();
-          // Resource optimization: Adaptive polling frequency
-          // Use faster polling when system audio is active, slower when idle
-          final hasRecentSystemActivity = _recentSystemTranscripts.isNotEmpty;
-          final pollInterval = hasRecentSystemActivity 
-              ? const Duration(milliseconds: 50)  // Fast when active (20 Hz)
-              : const Duration(milliseconds: 100);  // Slower when idle (10 Hz) - saves CPU/battery
-          
-          _systemAudioPollTimer = Timer.periodic(
-            pollInterval,
-            (_) {
-              // Check if recording is still active and not stopping before processing
-              if (!_isRecording || _isStopping || _transcriptionService == null) {
-                return;
-              }
-              
-              // Note: We don't suppress system audio when mic finalizes because:
-              // 1. System audio is typically the original source (video calls, apps, etc.)
-              // 2. Suppressing system audio causes delays in transcription
-              // 3. Mic echo suppression is handled by suppressing mic audio instead
-              
-              // Pull ~50ms at 16kHz mono PCM16 => 16000*0.05*2 = 1600 bytes
-              WindowsAudioService.getSystemAudioFrame(lengthBytes: 1600).then((frame) {
-                // Double-check state after async operation - must check _isStopping too
-                if (!_isRecording || _isStopping || _transcriptionService == null) {
-                  return;
-                }
-                if (frame.isEmpty) return;
-                try {
-                  _transcriptionService?.sendAudio(frame, source: 'system');
-                } catch (e) {
-                  print('[SpeechToTextProvider] Error sending system audio: $e');
-                }
-              }).catchError((error) {
-                print('[SpeechToTextProvider] Error getting system audio frame: $error');
-              });
-            },
-          );
-        } else {
-          print('[SpeechToTextProvider] System audio capture not available');
+        final started = await _startSystemAudioCaptureAndPolling();
+        if (!started) {
+          // Don't fail the meeting; just keep retrying in the background.
+          _ensureSystemAudioRecoveryTimer();
         }
       }
 
@@ -678,107 +679,128 @@ class SpeechToTextProvider extends ChangeNotifier {
         // Request permissions
         final hasPermission = await requestPermissions();
         if (!hasPermission) {
-          _errorMessage = 'Microphone permission denied';
-          print('[SpeechToTextProvider] Microphone permission denied');
-          notifyListeners();
-          return;
-        }
-
-        // Initialize audio capture
-        _audioCaptureService = AudioCaptureService(
-          onAudioData: (audioData) {
-            // Only send mic audio if useMic is still true, recording is active, and not stopping
-            if (!_useMic || !_isRecording || _isStopping) return;
-            
-            final now = DateTime.now();
-            
-            // Early meeting suppression: If system audio capture is active and recording just started,
-            // suppress mic for initial period to prevent early duplicates
-            if (_recordingStartTime != null && _isSystemAudioCapturing) {
-              final timeSinceStart = now.difference(_recordingStartTime!);
-              if (timeSinceStart < _initialSuppressionWindow) {
-                return;
-              }
-            }
-            
-            // Also suppress if we have any system transcripts but no mic transcripts yet
-            // This handles the case where system audio starts before mic
-            if (_bubbles.isNotEmpty && _recordingStartTime != null) {
-              final hasSystemTranscripts = _bubbles.any((b) => b.source == TranscriptSource.system);
-              final hasMicTranscripts = _bubbles.any((b) => b.source == TranscriptSource.mic);
-              final timeSinceStart = now.difference(_recordingStartTime!);
+          _errorMessage = 'Microphone permission denied. Uncheck “Use mic” to continue.';
+          _useMic = false;
+          if (!_isDisposed) notifyListeners();
+          // Continue recording (system audio may still work)
+        } else {
+          // Initialize audio capture
+          _audioCaptureService = AudioCaptureService(
+            onAudioData: (audioData) {
+              // Only send mic audio if useMic is still true, recording is active, and not stopping
+              if (!_useMic || !_isRecording || _isStopping) return;
               
-              // If system has transcripts but mic doesn't, and we're in early period, suppress mic
-              if (hasSystemTranscripts && !hasMicTranscripts && timeSinceStart < _initialSuppressionWindow) {
-                return;
+              final now = DateTime.now();
+              
+              // Early meeting suppression: If system audio capture is active and recording just started,
+              // suppress mic for initial period to prevent early duplicates
+              if (_recordingStartTime != null && _isSystemAudioCapturing) {
+                final timeSinceStart = now.difference(_recordingStartTime!);
+                if (timeSinceStart < _initialSuppressionWindow) {
+                  return;
+                }
               }
-            }
-            
-            // Aggressive suppression: Suppress mic audio if system audio is active
-            // This is especially important for gaming headphones where echo is delayed
-            if (_isSystemAudioActive()) {
-              // If system audio is actively playing, suppress mic more aggressively
+              
+              // Also suppress if we have any system transcripts but no mic transcripts yet
+              // This handles the case where system audio starts before mic
+              if (_bubbles.isNotEmpty && _recordingStartTime != null) {
+                final hasSystemTranscripts = _bubbles.any((b) => b.source == TranscriptSource.system);
+                final hasMicTranscripts = _bubbles.any((b) => b.source == TranscriptSource.mic);
+                final timeSinceStart = now.difference(_recordingStartTime!);
+                
+                // If system has transcripts but mic doesn't, and we're in early period, suppress mic
+                if (hasSystemTranscripts && !hasMicTranscripts && timeSinceStart < _initialSuppressionWindow) {
+                  return;
+                }
+              }
+              
+              // Aggressive suppression: Suppress mic audio if system audio is active
+              // This is especially important for gaming headphones where echo is delayed
+              if (_isSystemAudioActive()) {
+                // If system audio is actively playing, suppress mic more aggressively
+                final lastSystem = _lastSystemTranscriptTime ?? _lastSystemFinalTime;
+                if (lastSystem != null) {
+                  final timeSinceSystem = now.difference(lastSystem);
+                  if (timeSinceSystem < _micSuppressionWindow) {
+                    return;
+                  }
+                }
+              }
+              
+              // Standard suppression: Suppress mic audio if system just finalized a transcript
               if (_lastSystemFinalTime != null) {
                 final timeSinceSystemFinal = now.difference(_lastSystemFinalTime!);
                 if (timeSinceSystemFinal < _micSuppressionWindow) {
                   // Skip sending mic audio - it's likely echo from system audio
                   return;
                 }
+                // Clear suppression timestamp if window has passed
+                if (timeSinceSystemFinal >= _micSuppressionWindow) {
+                  _lastSystemFinalTime = null;
+                }
               }
-            }
-            
-            // Standard suppression: Suppress mic audio if system just finalized a transcript
-            if (_lastSystemFinalTime != null) {
-              final timeSinceSystemFinal = now.difference(_lastSystemFinalTime!);
-              if (timeSinceSystemFinal < _micSuppressionWindow) {
-                // Skip sending mic audio - it's likely echo from system audio
-                return;
+              
+              _audioFrameCount++;
+              // Final check before sending - must not be stopping
+              if (!_isStopping && _transcriptionService != null) {
+                try {
+                  _transcriptionService?.sendAudio(audioData, source: 'mic');
+                } catch (e) {
+                  print('[SpeechToTextProvider] Error sending mic audio: $e');
+                }
               }
-              // Clear suppression timestamp if window has passed
-              if (timeSinceSystemFinal >= _micSuppressionWindow) {
-                _lastSystemFinalTime = null;
+            },
+          );
+
+          // Request microphone permission and start capturing
+          final canCapture = await _audioCaptureService!.requestPermissions();
+          if (!canCapture) {
+            _errorMessage = 'Microphone permission denied. Uncheck “Use mic” to continue.';
+            _useMic = false;
+            _audioCaptureService?.dispose();
+            _audioCaptureService = null;
+            if (!_isDisposed) notifyListeners();
+          } else {
+            // Start audio capturing
+            try {
+              await _audioCaptureService!.startCapturing();
+              if (_audioCaptureService!.selectedDeviceNotFound) {
+                final used = _audioCaptureService!.lastUsedDeviceLabel ?? 'default device';
+                _errorMessage =
+                    'Mic was disconnected/reconnected. Using "$used". Go to Settings → Audio to reselect your microphone.';
+                if (!_isDisposed) notifyListeners();
               }
-            }
-            
-            _audioFrameCount++;
-            // Final check before sending - must not be stopping
-            if (!_isStopping && _transcriptionService != null) {
+            } catch (e) {
+              _errorMessage = _friendlyMicError(e);
+              _useMic = false;
               try {
-                _transcriptionService?.sendAudio(audioData, source: 'mic');
-              } catch (e) {
-                print('[SpeechToTextProvider] Error sending mic audio: $e');
-              }
+                await _audioCaptureService?.stopCapturing();
+              } catch (_) {}
+              _audioCaptureService?.dispose();
+              _audioCaptureService = null;
+              if (!_isDisposed) notifyListeners();
+              // Continue recording (system audio may still work)
             }
-          },
-        );
-
-        // Request microphone permission and start capturing
-        final canCapture = await _audioCaptureService!.requestPermissions();
-        if (!canCapture) {
-          _errorMessage = 'Microphone permission denied';
-          _isConnected = false;
-          _transcriptionService?.disconnect();
-          notifyListeners();
-          return;
-        }
-
-        // Start audio capturing
-        try {
-          await _audioCaptureService!.startCapturing();
-        } catch (e) {
-          _errorMessage = 'Failed to start audio capture: $e';
-          _isConnected = false;
-          _transcriptionService?.disconnect();
-          notifyListeners();
-          return;
+          }
         }
       } else {
-        print('[SpeechToTextProvider] Microphone capture disabled');
         _audioCaptureService = null;
       }
 
-      _isRecording = true;
-      notifyListeners();
+      // If neither system audio nor mic is available, stop cleanly.
+      if (!_isSystemAudioCapturing && !_useMic) {
+        _errorMessage = 'No audio source available (no mic and system audio capture unavailable).';
+        _isRecording = false;
+        _isConnected = false;
+        try {
+          _systemAudioPollTimer?.cancel();
+          _systemAudioPollTimer = null;
+        } catch (_) {}
+        _transcriptionService?.disconnect();
+        if (!_isDisposed) notifyListeners();
+        return;
+      }
+
       print('[SpeechToTextProvider] Recording started${_useMic ? ' with microphone' : ' without microphone'}');
     } catch (e) {
       _errorMessage = 'Failed to start recording: $e';
@@ -787,6 +809,152 @@ class SpeechToTextProvider extends ChangeNotifier {
       _isConnected = false;
       notifyListeners();
     }
+  }
+
+  Future<bool> _startSystemAudioCaptureAndPolling() async {
+    if (kIsWeb || !Platform.isWindows) return false;
+    try {
+      final started = await WindowsAudioService.startSystemAudioCapture().timeout(const Duration(seconds: 4));
+      _isSystemAudioCapturing = started;
+      if (!started) return false;
+
+      // Successful start: clear recovery flags
+      _systemAudioRestartAttempts = 0;
+      _systemAudioRecoveryNotified = false;
+      _systemAudioRecoveryTimer?.cancel();
+      _systemAudioRecoveryTimer = null;
+
+      // IMPORTANT: poll at real-time (~50ms chunks at 20Hz)
+      _systemAudioPollTimer?.cancel();
+      const pollInterval = Duration(milliseconds: 50);
+      _systemAudioPollTimer = Timer.periodic(
+        pollInterval,
+        (_) {
+          if (!_isRecording || _isStopping || _transcriptionService == null) return;
+          if (!_isSystemAudioCapturing) return;
+
+          WindowsAudioService.getSystemAudioFrame(lengthBytes: 1600).then((frame) {
+            if (!_isRecording || _isStopping || _transcriptionService == null) return;
+            final now = DateTime.now();
+            if (frame.isEmpty) {
+              _maybeRestartSystemAudioCapture(now: now);
+              return;
+            }
+            _lastSystemAudioFrameAt = now;
+            _hadSystemAudioFramesThisRun = true;
+            try {
+              _transcriptionService?.sendAudio(frame, source: 'system');
+            } catch (e) {
+              print('[SpeechToTextProvider] Error sending system audio: $e');
+            }
+          }).catchError((error) {
+            print('[SpeechToTextProvider] Error getting system audio frame: $error');
+            _maybeRestartSystemAudioCapture(now: DateTime.now());
+          });
+        },
+      );
+      return true;
+    } catch (_) {
+      _isSystemAudioCapturing = false;
+      return false;
+    }
+  }
+
+  Future<void> _stopSystemAudioCaptureAndPolling() async {
+    try {
+      _systemAudioPollTimer?.cancel();
+      _systemAudioPollTimer = null;
+    } catch (_) {}
+    if (!kIsWeb && Platform.isWindows && _isSystemAudioCapturing) {
+      try {
+        await WindowsAudioService.stopSystemAudioCapture().timeout(const Duration(seconds: 4));
+      } catch (_) {}
+    }
+    _isSystemAudioCapturing = false;
+  }
+
+  void _ensureSystemAudioRecoveryTimer() {
+    if (kIsWeb || !Platform.isWindows) return;
+    if (_systemAudioRecoveryTimer != null) return;
+
+    if (!_systemAudioRecoveryNotified) {
+      _systemAudioRecoveryNotified = true;
+      _errorMessage = 'System audio device changed. Reconnecting…';
+      if (!_isDisposed) notifyListeners();
+    }
+
+    _systemAudioRecoveryTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
+      if (_isDisposed || !_isRecording || _isStopping) {
+        _systemAudioRecoveryTimer?.cancel();
+        _systemAudioRecoveryTimer = null;
+        return;
+      }
+      if (_isSystemAudioCapturing) {
+        _systemAudioRecoveryTimer?.cancel();
+        _systemAudioRecoveryTimer = null;
+        return;
+      }
+      final ok = await _startSystemAudioCaptureAndPolling();
+      if (ok) {
+        // Clear the temporary message once recovered.
+        if (_errorMessage.startsWith('System audio device changed')) {
+          _errorMessage = '';
+        }
+        if (!_isDisposed) notifyListeners();
+      }
+    });
+  }
+
+  void _maybeRestartSystemAudioCapture({required DateTime now}) {
+    if (_systemAudioRestartInProgress) return;
+    if (!_isRecording || _isStopping) return;
+    if (!Platform.isWindows) return;
+    if (!_isSystemAudioCapturing) return;
+
+    // Backoff + cap attempts (avoid thrashing during silence)
+    if (_systemAudioRestartAttempts >= 3) return;
+    if (_lastSystemAudioRestartAt != null && now.difference(_lastSystemAudioRestartAt!) < const Duration(seconds: 6)) {
+      return;
+    }
+
+    // Only restart if we previously had frames (common "stuck after device change" case),
+    // OR if we've been recording for a while and still never got any system frames.
+    final lastFrameAt = _lastSystemAudioFrameAt;
+    final timeSinceStart = _recordingStartTime == null ? null : now.difference(_recordingStartTime!);
+
+    final shouldRestart =
+        (_hadSystemAudioFramesThisRun && lastFrameAt != null && now.difference(lastFrameAt) > const Duration(seconds: 2)) ||
+        (!_hadSystemAudioFramesThisRun && timeSinceStart != null && timeSinceStart > const Duration(seconds: 12));
+
+    if (!shouldRestart) return;
+
+    _systemAudioRestartInProgress = true;
+    _lastSystemAudioRestartAt = now;
+    _systemAudioRestartAttempts++;
+
+    Future.microtask(() async {
+      try {
+        // Stop + restart loopback capture to pick up the new default output device.
+        await _stopSystemAudioCaptureAndPolling();
+        if (!_isRecording || _isStopping) return;
+        await Future.delayed(const Duration(milliseconds: 200));
+        final restarted = await _startSystemAudioCaptureAndPolling();
+        if (!restarted) {
+          // Enter recovery mode: keep retrying in the background.
+          _ensureSystemAudioRecoveryTimer();
+        } else {
+          if (_errorMessage.startsWith('System audio device changed')) {
+            _errorMessage = '';
+          }
+          if (!_isDisposed) notifyListeners();
+        }
+      } catch (_) {
+        // Ignore; we'll retry with backoff if still recording.
+        _ensureSystemAudioRecoveryTimer();
+      } finally {
+        _systemAudioRestartInProgress = false;
+      }
+    });
   }
 
   Future<void> setUseMic(bool useMic) async {
@@ -836,9 +1004,10 @@ class SpeechToTextProvider extends ChangeNotifier {
             
             // Aggressive suppression: Suppress mic audio if system audio is active
             if (_isSystemAudioActive()) {
-              if (_lastSystemFinalTime != null) {
-                final timeSinceSystemFinal = now.difference(_lastSystemFinalTime!);
-                if (timeSinceSystemFinal < _micSuppressionWindow) {
+              final lastSystem = _lastSystemTranscriptTime ?? _lastSystemFinalTime;
+              if (lastSystem != null) {
+                final timeSinceSystem = now.difference(lastSystem);
+                if (timeSinceSystem < _micSuppressionWindow) {
                   return;
                 }
               }
@@ -879,9 +1048,14 @@ class SpeechToTextProvider extends ChangeNotifier {
         
         try {
           await _audioCaptureService!.startCapturing();
-          print('[SpeechToTextProvider] Microphone enabled');
+          if (_audioCaptureService!.selectedDeviceNotFound) {
+            final used = _audioCaptureService!.lastUsedDeviceLabel ?? 'default device';
+            _errorMessage =
+                'Mic was disconnected/reconnected. Using "$used". Go to Settings → Audio to reselect your microphone.';
+            notifyListeners();
+          }
         } catch (e) {
-          _errorMessage = 'Failed to start audio capture: $e';
+          _errorMessage = _friendlyMicError(e);
           _useMic = false;
           _audioCaptureService?.dispose();
           _audioCaptureService = null;
@@ -930,6 +1104,10 @@ class SpeechToTextProvider extends ChangeNotifier {
       } catch (e) {
         print('[SpeechToTextProvider] Error canceling system audio poll timer: $e');
       }
+      try {
+        _systemAudioRecoveryTimer?.cancel();
+        _systemAudioRecoveryTimer = null;
+      } catch (_) {}
       
       // STEP 3: Cancel transcript subscription to stop processing incoming messages
       try {
@@ -941,6 +1119,7 @@ class SpeechToTextProvider extends ChangeNotifier {
       
       // STEP 4: Reset state immediately
       _lastSystemFinalTime = null;
+      _lastSystemTranscriptTime = null;
       _recentSystemTranscripts.clear();
       _recordingStartTime = null;
       
@@ -975,6 +1154,7 @@ class SpeechToTextProvider extends ChangeNotifier {
             }
           }
           _isSystemAudioCapturing = false;
+          _lastSystemTranscriptTime = null;
           
           // Dispose audio capture service
           try {
@@ -1031,6 +1211,7 @@ class SpeechToTextProvider extends ChangeNotifier {
             } catch (_) {}
           }
           _isSystemAudioCapturing = false;
+          _lastSystemTranscriptTime = null;
           try {
             _transcriptionService?.disconnect();
           } catch (_) {}
@@ -1081,6 +1262,7 @@ class SpeechToTextProvider extends ChangeNotifier {
     _isDisposed = true;
     _mockAudioTimer?.cancel();
     _systemAudioPollTimer?.cancel();
+    _systemAudioRecoveryTimer?.cancel();
     _transcriptSubscription?.cancel();
     _audioCaptureService?.dispose();
     _transcriptionService?.dispose();

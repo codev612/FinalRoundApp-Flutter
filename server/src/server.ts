@@ -28,6 +28,9 @@ import {
   saveApiUsage,
   getUserApiUsage,
   getUserApiUsageStats,
+  getUserByIdFull,
+  saveTranscriptionUsage,
+  getTranscriptionUsageMsForPeriod,
   MeetingSession,
 } from './database.js';
 import { fileURLToPath } from 'url';
@@ -90,7 +93,7 @@ app.use('/api/auth', authRoutes);
 app.post('/api/sessions', authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.userId;
-    const { id, title, createdAt, updatedAt, bubbles, summary, insights, questions, mode, modeKey, metadata } = req.body;
+    const { title, createdAt, updatedAt, bubbles, summary, insights, questions, mode, modeKey, metadata } = req.body;
 
     if (!title || !createdAt) {
       return res.status(400).json({ error: 'Missing required fields: title, createdAt' });
@@ -116,10 +119,10 @@ app.post('/api/sessions', authenticate, async (req: AuthRequest, res: Response) 
 
     const sessionId = await createMeetingSession(session);
     const savedSession = await getMeetingSession(sessionId, userId);
-    res.status(201).json(savedSession);
+    return res.status(201).json(savedSession);
   } catch (error: any) {
     console.error('Error creating session:', error);
-    res.status(500).json({ error: error.message || 'Failed to create session' });
+    return res.status(500).json({ error: error.message || 'Failed to create session' });
   }
 });
 
@@ -138,7 +141,7 @@ app.get('/api/sessions', authenticate, async (req: AuthRequest, res: Response) =
       search,
     });
     
-    res.json({
+    return res.json({
       sessions: result.sessions,
       total: result.total,
       limit: limit,
@@ -146,7 +149,7 @@ app.get('/api/sessions', authenticate, async (req: AuthRequest, res: Response) =
     });
   } catch (error: any) {
     console.error('Error listing sessions:', error);
-    res.status(500).json({ error: error.message || 'Failed to list sessions' });
+    return res.status(500).json({ error: error.message || 'Failed to list sessions' });
   }
 });
 
@@ -158,10 +161,10 @@ app.get('/api/sessions/:id', authenticate, async (req: AuthRequest, res: Respons
     if (!session) {
       return res.status(404).json({ error: 'Session not found' });
     }
-    res.json(session);
+    return res.json(session);
   } catch (error: any) {
     console.error('Error getting session:', error);
-    res.status(500).json({ error: error.message || 'Failed to get session' });
+    return res.status(500).json({ error: error.message || 'Failed to get session' });
   }
 });
 
@@ -230,10 +233,10 @@ app.put('/api/sessions/:id', authenticate, async (req: AuthRequest, res: Respons
     if (!updatedSession) {
       return res.status(404).json({ error: 'Session not found' });
     }
-    res.json(updatedSession);
+    return res.json(updatedSession);
   } catch (error: any) {
     console.error('Error updating session:', error);
-    res.status(500).json({ error: error.message || 'Failed to update session' });
+    return res.status(500).json({ error: error.message || 'Failed to update session' });
   }
 });
 
@@ -245,10 +248,10 @@ app.delete('/api/sessions/:id', authenticate, async (req: AuthRequest, res: Resp
     if (!success) {
       return res.status(404).json({ error: 'Session not found' });
     }
-    res.status(204).send();
+    return res.status(204).send();
   } catch (error: any) {
     console.error('Error deleting session:', error);
-    res.status(500).json({ error: error.message || 'Failed to delete session' });
+    return res.status(500).json({ error: error.message || 'Failed to delete session' });
   }
 });
 
@@ -260,10 +263,10 @@ app.get('/api/mode-configs', authenticate, async (req: AuthRequest, res: Respons
     if (!configs) {
       return res.status(404).json({ error: 'No mode configs stored yet' });
     }
-    res.json(configs);
+    return res.json(configs);
   } catch (error: any) {
     console.error('Error getting mode configs:', error);
-    res.status(500).json({ error: error.message || 'Failed to get mode configs' });
+    return res.status(500).json({ error: error.message || 'Failed to get mode configs' });
   }
 });
 
@@ -280,10 +283,10 @@ app.put('/api/mode-configs/:modeName', authenticate, async (req: AuthRequest, re
       notesTemplate: typeof notesTemplate === 'string' ? notesTemplate : '',
     };
     await saveModeConfig(userId, modeName, config);
-    res.status(200).json({ mode: modeName, ...config });
+    return res.status(200).json({ mode: modeName, ...config });
   } catch (error: any) {
     console.error('Error saving mode config:', error);
-    res.status(500).json({ error: error.message || 'Failed to save mode config' });
+    return res.status(500).json({ error: error.message || 'Failed to save mode config' });
   }
 });
 
@@ -292,10 +295,10 @@ app.get('/api/custom-mode-configs', authenticate, async (req: AuthRequest, res: 
   try {
     const userId = req.user!.userId;
     const modes = await getCustomModes(userId);
-    res.json(modes);
+    return res.json(modes);
   } catch (error: any) {
     console.error('Error getting custom modes:', error);
-    res.status(500).json({ error: error.message || 'Failed to get custom modes' });
+    return res.status(500).json({ error: error.message || 'Failed to get custom modes' });
   }
 });
 
@@ -314,10 +317,10 @@ app.put('/api/custom-mode-configs', authenticate, async (req: AuthRequest, res: 
       notesTemplate: String(m?.notesTemplate ?? ''),
     }));
     await saveCustomModes(userId, modes);
-    res.status(200).json(modes);
+    return res.status(200).json(modes);
   } catch (error: any) {
     console.error('Error saving custom modes:', error);
-    res.status(500).json({ error: error.message || 'Failed to save custom modes' });
+    return res.status(500).json({ error: error.message || 'Failed to save custom modes' });
   }
 });
 
@@ -332,10 +335,10 @@ app.delete('/api/custom-mode-configs/:id', authenticate, async (req: AuthRequest
     }
     await deleteCustomMode(userId, modeId);
     console.log('[RemoveMode] deleteCustomMode(userId, modeId) completed');
-    res.status(200).json({ ok: true });
+    return res.status(200).json({ ok: true });
   } catch (error: any) {
     console.error('[RemoveMode] Error deleting custom mode:', error);
-    res.status(500).json({ error: error.message || 'Failed to delete custom mode' });
+    return res.status(500).json({ error: error.message || 'Failed to delete custom mode' });
   }
 });
 
@@ -346,10 +349,10 @@ app.get('/api/question-templates', authenticate, async (req: AuthRequest, res: R
     console.log('[QuestionTemplates] GET request from userId:', userId);
     const templates = await getQuestionTemplates(userId);
     console.log('[QuestionTemplates] Returning', templates.length, 'templates');
-    res.json(templates);
+    return res.json(templates);
   } catch (error: any) {
     console.error('Error getting question templates:', error);
-    res.status(500).json({ error: error.message || 'Failed to get question templates' });
+    return res.status(500).json({ error: error.message || 'Failed to get question templates' });
   }
 });
 
@@ -369,10 +372,10 @@ app.put('/api/question-templates', authenticate, async (req: AuthRequest, res: R
     console.log('[QuestionTemplates] Saving', templates.length, 'templates to DB');
     await saveQuestionTemplates(userId, templates);
     console.log('[QuestionTemplates] Successfully saved templates');
-    res.status(200).json(templates);
+    return res.status(200).json(templates);
   } catch (error: any) {
     console.error('[QuestionTemplates] Error saving question templates:', error);
-    res.status(500).json({ error: error.message || 'Failed to save question templates' });
+    return res.status(500).json({ error: error.message || 'Failed to save question templates' });
   }
 });
 
@@ -384,10 +387,10 @@ app.delete('/api/question-templates/:id', authenticate, async (req: AuthRequest,
       return res.status(400).json({ error: 'Template id is required' });
     }
     await deleteQuestionTemplate(userId, templateId);
-    res.status(200).json({ ok: true });
+    return res.status(200).json({ ok: true });
   } catch (error: any) {
     console.error('Error deleting question template:', error);
-    res.status(500).json({ error: error.message || 'Failed to delete question template' });
+    return res.status(500).json({ error: error.message || 'Failed to delete question template' });
   }
 });
 
@@ -399,10 +402,10 @@ app.get('/api/usage', authenticate, async (req: AuthRequest, res: Response) => {
     const endDate = req.query.endDate ? new Date(req.query.endDate as string) : undefined;
     
     const stats = await getUserApiUsageStats(userId, startDate, endDate);
-    res.json(stats);
+    return res.json(stats);
   } catch (error: any) {
     console.error('Error fetching API usage:', error);
-    res.status(500).json({ error: error.message || 'Failed to fetch API usage' });
+    return res.status(500).json({ error: error.message || 'Failed to fetch API usage' });
   }
 });
 
@@ -416,7 +419,7 @@ app.get('/api/usage/details', authenticate, async (req: AuthRequest, res: Respon
     const usage = await getUserApiUsage(userId, startDate, endDate);
     const limited = usage.slice(0, limit);
     
-    res.json({
+    return res.json({
       usage: limited.map(u => ({
         id: u._id?.toString(),
         model: u.model,
@@ -431,13 +434,112 @@ app.get('/api/usage/details', authenticate, async (req: AuthRequest, res: Respon
     });
   } catch (error: any) {
     console.error('Error fetching API usage details:', error);
-    res.status(500).json({ error: error.message || 'Failed to fetch API usage details' });
+    return res.status(500).json({ error: error.message || 'Failed to fetch API usage details' });
+  }
+});
+
+// Billing / pricing endpoints (protected)
+app.get('/api/billing/me', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const user = await getUserByIdFull(userId);
+    const plan = normalizePlan(user?.plan);
+    const ent = planEntitlements(plan);
+
+    const { start, end } = getCurrentBillingPeriodUtc();
+    const usedMs = await getTranscriptionUsageMsForPeriod(userId, start, end);
+    const usedMinutes = Math.floor(usedMs / 60000);
+    const limitMinutes = ent.transcriptionMinutesPerMonth;
+    const remainingMinutes = Math.max(0, limitMinutes - usedMinutes);
+
+    return res.json({
+      plan: ent.plan,
+      billingPeriod: {
+        start: start.toISOString(),
+        end: end.toISOString(),
+      },
+      transcription: {
+        limitMinutes,
+        usedMinutes,
+        remainingMinutes,
+      },
+      ai: {
+        canUseSummary: ent.canUseSummary,
+        allowedModels: ent.allowedModels,
+      },
+    });
+  } catch (error: any) {
+    console.error('Error fetching billing info:', error);
+    return res.status(500).json({ error: error.message || 'Failed to fetch billing info' });
+  }
+});
+
+app.post('/api/billing/transcription-usage', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const { durationMs, sessionId } = req.body ?? {};
+    const ms = typeof durationMs === 'number' ? durationMs : parseInt(String(durationMs ?? '0'), 10);
+    if (!Number.isFinite(ms) || ms <= 0) {
+      return res.status(400).json({ error: 'durationMs must be a positive number' });
+    }
+    // Cap to 8 hours per event to prevent accidental abuse.
+    if (ms > 8 * 60 * 60 * 1000) {
+      return res.status(400).json({ error: 'durationMs too large' });
+    }
+    await saveTranscriptionUsage(userId, ms, typeof sessionId === 'string' ? sessionId : undefined);
+    return res.json({ ok: true });
+  } catch (error: any) {
+    console.error('Error saving transcription usage:', error);
+    return res.status(500).json({ error: error.message || 'Failed to save transcription usage' });
   }
 });
 
 const openai = process.env.OPENAI_API_KEY
   ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
   : null;
+
+type PlanTier = 'free' | 'pro' | 'pro_plus';
+
+const normalizePlan = (p: any): PlanTier => {
+  if (p === 'pro' || p === 'pro_plus') return p;
+  // Backward/alternate naming
+  if (p === 'business' || p === 'proplus' || p === 'pro+') return 'pro_plus';
+  return 'free';
+};
+
+const planEntitlements = (plan: PlanTier) => {
+  switch (plan) {
+    case 'pro_plus':
+      return {
+        plan,
+        transcriptionMinutesPerMonth: 6000,
+        canUseSummary: true,
+        allowedModels: ['gpt-5.2', 'gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'],
+      };
+    case 'pro':
+      return {
+        plan,
+        transcriptionMinutesPerMonth: 1500,
+        canUseSummary: true,
+        allowedModels: ['gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'],
+      };
+    case 'free':
+    default:
+      return {
+        plan: 'free' as const,
+        transcriptionMinutesPerMonth: 600,
+        canUseSummary: false,
+        allowedModels: ['gpt-4.1-mini', 'gpt-4.1'],
+      };
+  }
+};
+
+const getCurrentBillingPeriodUtc = () => {
+  const now = new Date();
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0, 0));
+  return { start, end };
+};
 
 // AI response endpoint (protected)
 // Accepts a short transcript history and returns a single assistant reply.
@@ -548,13 +650,26 @@ app.post('/ai/respond', authenticate, async (req: AuthRequest, res: Response) =>
         break;
     }
 
+    const userId = req.user!.userId;
+    const user = await getUserByIdFull(userId);
+    const plan = normalizePlan(user?.plan);
+    const ent = planEntitlements(plan);
+
     const modelText = typeof requestedModel === 'string' ? requestedModel.trim() : '';
     if (modelText.length > 80) {
       return res.status(400).json({ error: 'Model name too long' });
     }
+
     const model = modelText.length > 0 ? modelText : (process.env.OPENAI_MODEL || 'gpt-4o-mini');
+    if (!ent.allowedModels.includes(model)) {
+      return res.status(403).json({ error: `Model not allowed for plan: ${ent.plan}` });
+    }
+
+    // Free plan cannot use summary/insights/questions
+    if (!ent.canUseSummary && requestMode !== 'reply') {
+      return res.status(403).json({ error: 'Upgrade required for summaries' });
+    }
     const maxTokens = requestMode === 'insights' ? 600 : requestMode === 'questions' ? 300 : 400;
-    const userId = req.user!.userId;
 
     const completion = await openai.chat.completions.create({
       model,
@@ -1066,6 +1181,21 @@ aiWss.on('connection', (ws: WebSocket) => {
       const maxTokens = requestMode === 'insights' ? 600 : requestMode === 'questions' ? 300 : 400;
       const authWs = ws as AuthenticatedWebSocket;
       const userId = authWs.user?.userId ?? '';
+
+      // Enforce pricing tier entitlements (best-effort; defaults to free)
+      try {
+        const user = userId ? await getUserByIdFull(userId) : undefined;
+        const plan = normalizePlan(user?.plan);
+        const ent = planEntitlements(plan);
+        if (!ent.allowedModels.includes(model)) {
+          return send({ type: 'ai_error', requestId, status: 403, message: `Model not allowed for plan: ${ent.plan}` });
+        }
+        if (!ent.canUseSummary && requestMode !== 'reply') {
+          return send({ type: 'ai_error', requestId, status: 403, message: 'Upgrade required for summaries' });
+        }
+      } catch (_) {
+        // If billing lookup fails, default behavior continues (server-side OpenAI may still reject).
+      }
 
       send({ type: 'ai_start', requestId });
 

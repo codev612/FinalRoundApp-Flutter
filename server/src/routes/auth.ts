@@ -5,12 +5,10 @@ import {
   getUserById,
   getUserByIdFull,
   getUserByVerificationToken,
-  getUserByResetToken,
   getUserByResetCode,
   markEmailVerified,
   setVerificationCode,
   generateVerificationCode,
-  setResetToken,
   setResetCode,
   updatePassword,
   updateUserName,
@@ -19,10 +17,8 @@ import {
   setNewEmailCode,
   verifyNewEmailForChange,
   clearPendingEmailChange,
-  generateToken as generateDbToken,
 } from '../database.js';
 import { hashPassword, verifyPassword, generateToken } from '../auth.js';
-import { getUserByIdFull } from '../database.js';
 import { sendVerificationEmail, sendPasswordResetEmail, sendProfileChangeAlert } from '../emailService.js';
 import { authenticate, AuthRequest } from '../auth.js';
 

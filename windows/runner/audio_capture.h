@@ -23,6 +23,7 @@ class AudioCapture {
  private:
   bool is_capturing_ = false;
   bool is_initialized_ = false;
+  bool com_initialized_ = false;
   
   // WASAPI components
   IMMDeviceEnumerator* device_enumerator_ = nullptr;

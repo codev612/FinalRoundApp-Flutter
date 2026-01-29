@@ -5,7 +5,6 @@ import Mailgun from 'mailgun.js';
 let MAILGUN_API_KEY = '';
 let DOMAIN = '';
 let FROM_EMAIL = '';
-let BASE_URL = 'http://localhost:3000';
 let MAILGUN_URL: string | undefined;
 
 // Initialize Mailgun client
@@ -17,7 +16,6 @@ export function initializeMailgun(): void {
   MAILGUN_API_KEY = process.env.MAILGUN_API_KEY || '';
   DOMAIN = process.env.MAILGUN_DOMAIN || '';
   FROM_EMAIL = process.env.MAILGUN_FROM_EMAIL || `noreply@${DOMAIN}`;
-  BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
   MAILGUN_URL = process.env.MAILGUN_URL;
 
   // Debug: Log environment variable status (without exposing sensitive data)

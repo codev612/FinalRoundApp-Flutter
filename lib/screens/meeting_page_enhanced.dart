@@ -13,6 +13,7 @@ import '../models/transcript_bubble.dart';
 import '../services/meeting_question_service.dart';
 import '../services/meeting_mode_service.dart';
 import '../services/ai_service.dart';
+import '../services/billing_service.dart';
 import '../providers/shortcuts_provider.dart';
 import 'manage_mode_page.dart';
 import 'manage_question_templates_page.dart';
@@ -40,7 +41,6 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
   Timer? _recordingTimer;
   DateTime? _recordingStartedAt;
   bool _showMarkers = true;
-  bool _useMic = false;
   bool _autoAsk = false;
   bool _showConversationControls = true;
   bool _showAiControls = true;
@@ -53,7 +53,14 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
   MeetingQuestionService? _questionService;
 
   static const String _aiModelPrefKey = 'openai_model';
-  String _selectedAiModel = 'gpt-4o-mini';
+  String _selectedAiModel = 'gpt-4.1-mini';
+
+  BillingService? _billingService;
+  BillingInfo? _billingInfo;
+  String? _billingError;
+  DateTime? _recordingRunStartedAt;
+  int? _recordingRunStartRemainingMs;
+  bool _limitStopTriggered = false;
 
   @override
   void initState() {
@@ -74,6 +81,9 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
       await _loadAiModel();
       
       final authToken = authProvider.token;
+      _billingService = BillingService()..setAuthToken(authToken);
+      await _refreshBilling();
+
       _questionService = MeetingQuestionService()..setAuthToken(authToken);
       _speechProvider!.initialize(
         wsUrl: AppConfig.serverWebSocketUrl,
@@ -288,6 +298,17 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
       _recordingStartedAt ??= _calculateRecordingStartTime() ?? DateTime.now();
       _recordingTimer ??= Timer.periodic(const Duration(seconds: 1), (_) {
         if (!mounted) return;
+        final remainingMs = _currentRemainingBillingMs(speechProvider);
+        if (remainingMs != null &&
+            remainingMs <= 0 &&
+            !_limitStopTriggered &&
+            !speechProvider.isStopping) {
+          _limitStopTriggered = true;
+          Future.microtask(() async {
+            if (!mounted) return;
+            await _stopRecordingDueToLimit();
+          });
+        }
         setState(() {});
       });
     } else {
@@ -297,6 +318,71 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
       _recordingTimer?.cancel();
       _recordingTimer = null;
     }
+  }
+
+  int? _currentRemainingBillingMs(SpeechToTextProvider? speechProvider) {
+    final info = _billingInfo;
+    if (info == null) return null;
+
+    // Base remaining (minutes granularity from server)
+    final baseRemainingMs = info.remainingMinutes * 60 * 1000;
+
+    if (speechProvider == null || !speechProvider.isRecording) return baseRemainingMs;
+    final startedAt = _recordingRunStartedAt;
+    final startRemainingMs = _recordingRunStartRemainingMs;
+    if (startedAt == null || startRemainingMs == null) return baseRemainingMs;
+
+    final elapsedMs = DateTime.now().difference(startedAt).inMilliseconds;
+    final remaining = startRemainingMs - elapsedMs;
+    return remaining > 0 ? remaining : 0;
+  }
+
+  String _formatRemainingMs(int ms) {
+    if (ms <= 0) return '0m 00s';
+    final totalSeconds = (ms / 1000).floor();
+    final minutes = (totalSeconds / 60).floor();
+    final seconds = totalSeconds % 60;
+    return '${minutes}m ${seconds.toString().padLeft(2, '0')}s';
+  }
+
+  Future<void> _recordUsageForCurrentRunAndRefresh() async {
+    final startedAt = _recordingRunStartedAt;
+    _recordingRunStartedAt = null;
+    _recordingRunStartRemainingMs = null;
+    _limitStopTriggered = false;
+
+    if (startedAt == null) return;
+    final ms = DateTime.now().difference(startedAt).inMilliseconds;
+    if (ms <= 0) return;
+
+    try {
+      await _billingService?.recordTranscriptionUsage(
+        durationMs: ms,
+        sessionId: _meetingProvider?.currentSession?.id,
+      );
+    } catch (_) {}
+
+    try {
+      await _refreshBilling();
+    } catch (_) {}
+  }
+
+  Future<void> _stopRecordingDueToLimit() async {
+    // Best-effort: record what we used so far, stop recording, and inform the user.
+    await _recordUsageForCurrentRunAndRefresh();
+
+    final speechProvider = _speechProvider;
+    if (speechProvider == null) return;
+    if (!speechProvider.isRecording || speechProvider.isStopping) return;
+
+    try {
+      speechProvider.stopRecording().catchError((_) {});
+    } catch (_) {}
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Transcription limit reached. Recording stopped.')),
+    );
   }
 
   String _formatDuration(Duration d) {
@@ -763,6 +849,53 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     }
   }
 
+  Future<void> _refreshBilling() async {
+    final svc = _billingService;
+    if (svc == null) return;
+    try {
+      final info = await svc.getMe();
+      if (!mounted) return;
+      setState(() {
+        _billingInfo = info;
+        _billingError = null;
+      });
+
+      // If selected model is not allowed in this plan, snap to first allowed model.
+      final allowed = info.allowedModels;
+      if (allowed.isNotEmpty && !allowed.contains(_selectedAiModel)) {
+        await _setAiModel(allowed.first);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _billingError = e.toString();
+      });
+    }
+  }
+
+  String _formatModelLabel(String model) {
+    // Keep user-friendly display while preserving exact model value for API calls.
+    if (model.startsWith('gpt-')) {
+      return model.replaceAll('-', ' ').toUpperCase();
+    }
+    return model;
+  }
+
+  List<PopupMenuEntry<String>> _buildModelMenuItems() {
+    final allowed = _billingInfo?.allowedModels;
+    final models = (allowed != null && allowed.isNotEmpty)
+        ? allowed
+        : <String>['gpt-5.2', 'gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'];
+
+    final items = <PopupMenuEntry<String>>[];
+    for (final m in models) {
+      items.add(PopupMenuItem(value: m, child: Text(_formatModelLabel(m))));
+    }
+    items.add(const PopupMenuDivider());
+    items.add(const PopupMenuItem(value: '__custom__', child: Text('Custom…')));
+    return items;
+  }
+
   Future<void> _promptCustomModel() async {
     final controller = TextEditingController(text: _selectedAiModel);
     final result = await showDialog<String>(
@@ -799,14 +932,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
 
   Widget _buildModelMenuButton({required bool disabled, required ButtonStyle style}) {
     final label = _selectedAiModel.trim().isEmpty ? 'Model' : _selectedAiModel.trim();
-    // Format model name for display (remove hyphens, capitalize)
-    final displayLabel = label
-        .replaceAll('-', ' ')
-        .split(' ')
-        .map((word) => word.isEmpty 
-            ? '' 
-            : word[0].toUpperCase() + (word.length > 1 ? word.substring(1) : ''))
-        .join(' ');
+    final displayLabel = _formatModelLabel(label);
     
     return Tooltip(
       message: 'Current model: $displayLabel\nClick to change',
@@ -820,18 +946,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
           }
           await _setAiModel(value);
         },
-        itemBuilder: (context) => const [
-          PopupMenuItem(value: 'gpt-5.2', child: Text('GPT-5.2')),
-          PopupMenuItem(value: 'gpt-5', child: Text('GPT-5')),
-          PopupMenuItem(value: 'gpt-5.1', child: Text('GPT-5.1')),
-          PopupMenuItem(value: 'gpt-4.1', child: Text('GPT-4.1')),
-          PopupMenuItem(value: 'gpt-4.1-mini', child: Text('GPT-4.1 mini')),
-          PopupMenuDivider(),
-          PopupMenuItem(value: 'gpt-4o-mini', child: Text('gpt-4o-mini (legacy)')),
-          PopupMenuItem(value: 'gpt-4o', child: Text('gpt-4o (legacy)')),
-          PopupMenuDivider(),
-          PopupMenuItem(value: '__custom__', child: Text('Custom…')),
-        ],
+        itemBuilder: (context) => _buildModelMenuItems(),
         child: Container(
           width: 120,
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -1168,14 +1283,10 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
               const SizedBox(width: 12),
               // Use mic checkbox
               Checkbox(
-                value: _useMic,
+                value: speechProvider.useMic,
                 onChanged: (value) {
-                  final newValue = value ?? true;
-                  setState(() => _useMic = newValue);
-                  // If recording is active, toggle mic in the provider
-                  if (_speechProvider?.isRecording == true) {
-                    _speechProvider?.setUseMic(newValue);
-                  }
+                  final newValue = value ?? false;
+                  _speechProvider?.setUseMic(newValue);
                 },
                 visualDensity: VisualDensity.compact,
               ),
@@ -1285,6 +1396,10 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                                     ? null
                                     : () async {
                                         if (!mounted) return;
+                                        // Record transcription usage (best-effort) for billing.
+                                        Future.microtask(() async {
+                                          await _recordUsageForCurrentRunAndRefresh();
+                                        });
                                         
                                         // Stop recording - non-blocking for UI responsiveness
                                         if (!mounted) return;
@@ -1346,10 +1461,28 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                               )
                             else
                               IconButton.filled(
-                                onPressed: () {
+                                onPressed: () async {
                                   // Don't clear bubbles when resuming a saved session
                                   final shouldClear = !isSavedSession && !hasExistingBubbles;
-                                  speechProvider.startRecording(clearExisting: shouldClear, useMic: _useMic);
+                                  // Check minutes before starting (best-effort). If billing is unavailable, allow start.
+                                  try {
+                                    if (_billingInfo == null) {
+                                      await _refreshBilling();
+                                    }
+                                    final remaining = _billingInfo?.remainingMinutes;
+                                    if (remaining != null && remaining <= 0) {
+                                      if (!mounted) return;
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(content: Text('You have no transcription minutes left. Upgrade to continue.')),
+                                      );
+                                      return;
+                                    }
+                                  } catch (_) {}
+
+                                  _recordingRunStartedAt = DateTime.now();
+                                  _recordingRunStartRemainingMs = (_billingInfo?.remainingMinutes ?? 0) * 60 * 1000;
+                                  _limitStopTriggered = false;
+                                  speechProvider.startRecording(clearExisting: shouldClear, useMic: speechProvider.useMic);
                                 },
                                 tooltip: (isSavedSession || hasExistingBubbles) ? 'Resume (Ctrl+R)' : 'Start (Ctrl+R)',
                                 icon: Icon((isSavedSession || hasExistingBubbles) ? Icons.play_arrow : Icons.play_arrow),
@@ -1380,6 +1513,24 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                               icon: const Icon(Icons.save),
                               style: dockButtonStyle,
                             ),
+                            if (_billingInfo != null)
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                decoration: BoxDecoration(
+                                  color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.7),
+                                  borderRadius: BorderRadius.circular(999),
+                                  border: Border.all(
+                                    color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
+                                  ),
+                                ),
+                                child: Text(
+                                  '${_billingInfo!.plan == 'pro_plus' ? 'PRO+' : _billingInfo!.plan.toUpperCase()} · ${_formatRemainingMs(_currentRemainingBillingMs(_speechProvider) ?? (_billingInfo!.remainingMinutes * 60 * 1000))} left',
+                                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                                        color: Theme.of(context).colorScheme.onSurface,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                ),
+                              ),
                           ],
                         ),
                       ),
@@ -1612,6 +1763,14 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                                 onPressed: meetingProvider.isGeneratingSummary
                                     ? null
                                     : () async {
+                                        // Enforce plan locally (server enforces too)
+                                        if (_billingInfo != null && _billingInfo!.canUseSummary == false) {
+                                          if (!mounted) return;
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            const SnackBar(content: Text('Upgrade required to generate summaries.')),
+                                          );
+                                          return;
+                                        }
                                         final session = meetingProvider.currentSession;
                                         // If summary exists, show it directly
                                         if (session?.summary != null && session!.summary!.isNotEmpty) {
@@ -1626,6 +1785,13 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                                 onLongPress: meetingProvider.isGeneratingSummary
                                     ? null
                                     : () async {
+                                        if (_billingInfo != null && _billingInfo!.canUseSummary == false) {
+                                          if (!mounted) return;
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            const SnackBar(content: Text('Upgrade required to generate summaries.')),
+                                          );
+                                          return;
+                                        }
                                         // Force regenerate
                                         await meetingProvider.generateSummary(regenerate: true, model: _selectedAiModel);
                                         final s = meetingProvider.currentSession?.summary ?? '';
@@ -1824,6 +1990,13 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                             onPressed: meetingProvider.isGeneratingSummary
                                 ? null
                                 : () async {
+                                    if (_billingInfo != null && _billingInfo!.canUseSummary == false) {
+                                      if (!mounted) return;
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(content: Text('Upgrade required to generate summaries.')),
+                                      );
+                                      return;
+                                    }
                                     final session = meetingProvider.currentSession;
                                     // If summary exists, show it directly
                                     if (session?.summary != null && session!.summary!.isNotEmpty) {
@@ -1838,6 +2011,13 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                             onLongPress: meetingProvider.isGeneratingSummary
                                 ? null
                                 : () async {
+                                    if (_billingInfo != null && _billingInfo!.canUseSummary == false) {
+                                      if (!mounted) return;
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(content: Text('Upgrade required to generate summaries.')),
+                                      );
+                                      return;
+                                    }
                                     // Force regenerate
                                     await meetingProvider.generateSummary(regenerate: true, model: _selectedAiModel);
                                     final s = meetingProvider.currentSession?.summary ?? '';
@@ -1934,6 +2114,11 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                   if (speechProvider.isRecording) {
                     if (!mounted || speechProvider.isStopping) return null;
                     
+                    // Record transcription usage (best-effort) for billing.
+                    Future.microtask(() async {
+                      await _recordUsageForCurrentRunAndRefresh();
+                    });
+
                     // Stop recording - non-blocking for UI responsiveness
                     if (!mounted) return null;
                     try {
@@ -1985,7 +2170,25 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                     final isSavedSession = currentSession != null && currentSession.bubbles.isNotEmpty;
                     final hasExistingBubbles = speechProvider.bubbles.isNotEmpty;
                     final shouldClear = !isSavedSession && !hasExistingBubbles;
-                    speechProvider.startRecording(clearExisting: shouldClear, useMic: _useMic);
+                    // Check minutes before starting (best-effort). If billing is unavailable, allow start.
+                    try {
+                      if (_billingInfo == null) {
+                        await _refreshBilling();
+                      }
+                      final remaining = _billingInfo?.remainingMinutes;
+                      if (remaining != null && remaining <= 0) {
+                        if (!mounted) return null;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('You have no transcription minutes left. Upgrade to continue.')),
+                        );
+                        return null;
+                      }
+                    } catch (_) {}
+
+                    _recordingRunStartedAt = DateTime.now();
+                    _recordingRunStartRemainingMs = (_billingInfo?.remainingMinutes ?? 0) * 60 * 1000;
+                    _limitStopTriggered = false;
+                    speechProvider.startRecording(clearExisting: shouldClear, useMic: speechProvider.useMic);
                   }
                   return null;
                 },

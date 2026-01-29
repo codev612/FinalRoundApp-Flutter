@@ -53,7 +53,6 @@ class TranscriptionService {
             if (text.trim().isEmpty) return;
             
             final receivedSource = (data['source'] as String?) ?? 'unknown';
-            print('[TranscriptionService] Received transcript with source: "$receivedSource", text: "${text.substring(0, text.length > 50 ? 50 : text.length)}..."');
 
             _transcriptController.add(
               TranscriptionResult(

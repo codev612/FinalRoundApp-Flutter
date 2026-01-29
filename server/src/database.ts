@@ -7,6 +7,9 @@ export interface User {
   id?: string; // For backward compatibility, will be _id.toString()
   email: string;
   name: string;
+  // Pricing tier
+  plan?: 'free' | 'pro' | 'pro_plus';
+  plan_updated_at?: number;
   password_hash: string;
   email_verified: boolean;
   verification_code: string | null; // 6-digit code
@@ -181,6 +184,14 @@ export const connectDB = async (): Promise<void> => {
       questionTemplatesCollection = db.collection<QuestionTemplatesDoc>('question_templates');
       await questionTemplatesCollection.createIndex({ userId: 1 }, { unique: true });
     }
+
+    // Usage tracking collections (indexes only; collection handles are created on demand)
+    try {
+      await db.collection('api_usage').createIndex({ userId: 1, timestamp: -1 });
+    } catch (_) {}
+    try {
+      await db.collection('transcription_usage').createIndex({ userId: 1, timestamp: -1 });
+    } catch (_) {}
   } catch (error) {
     console.error('MongoDB connection error:', error);
     throw error;
@@ -411,6 +422,8 @@ export const createUser = async (email: string, name: string, passwordHash: stri
   const userDoc: Omit<User, '_id' | 'id'> = {
     email,
     name,
+    plan: 'free',
+    plan_updated_at: now,
     password_hash: passwordHash,
     email_verified: false,
     verification_code: code,
@@ -985,6 +998,58 @@ export const getUserApiUsageStats = async (
   }
   
   return stats;
+};
+
+// Transcription usage tracking (for pricing tiers / minute limits)
+export interface TranscriptionUsage {
+  _id?: ObjectId;
+  userId: string;
+  durationMs: number;
+  timestamp: Date;
+  sessionId?: string;
+}
+
+export const saveTranscriptionUsage = async (
+  userId: string,
+  durationMs: number,
+  sessionId?: string
+): Promise<void> => {
+  await connectDB();
+  const currentDb = db;
+  if (!currentDb) throw new Error('Database not connected');
+  await currentDb.collection<TranscriptionUsage>('transcription_usage').insertOne({
+    userId,
+    durationMs,
+    timestamp: new Date(),
+    sessionId,
+  });
+};
+
+export const getTranscriptionUsageMsForPeriod = async (
+  userId: string,
+  start: Date,
+  end: Date
+): Promise<number> => {
+  await connectDB();
+  const currentDb = db;
+  if (!currentDb) throw new Error('Database not connected');
+  const coll = currentDb.collection<TranscriptionUsage>('transcription_usage');
+  const rows = await coll
+    .aggregate<{ totalMs: number }>([
+      { $match: { userId, timestamp: { $gte: start, $lt: end } } },
+      { $group: { _id: null, totalMs: { $sum: '$durationMs' } } },
+      { $project: { _id: 0, totalMs: 1 } },
+    ])
+    .toArray();
+  return rows[0]?.totalMs ?? 0;
+};
+
+export const setUserPlan = async (userId: string, plan: 'free' | 'pro' | 'pro_plus'): Promise<void> => {
+  const collection = getUsersCollection();
+  await collection.updateOne(
+    { _id: new ObjectId(userId) },
+    { $set: { plan, plan_updated_at: Date.now(), updated_at: Date.now() } }
+  );
 };
 
 export default { connectDB, closeDB, getUsersCollection };

@@ -7,6 +7,12 @@ class AudioCaptureService {
   StreamSubscription? _audioSubscription;
   final Function(List<int>) onAudioData;
 
+  // Last device actually used (for warnings / debugging)
+  String? lastUsedDeviceId;
+  String? lastUsedDeviceLabel;
+  bool usedFallbackDevice = false;
+  bool selectedDeviceNotFound = false;
+
   AudioCaptureService({required this.onAudioData}) {
     _recorder = AudioRecorder();
   }
@@ -40,6 +46,10 @@ class AudioCaptureService {
   Future<void> startCapturing() async {
     try {
       print('[AudioCaptureService] Starting audio capture...');
+      usedFallbackDevice = false;
+      selectedDeviceNotFound = false;
+      lastUsedDeviceId = null;
+      lastUsedDeviceLabel = null;
 
       // Check if recorder is recording already
       final isRecording = await _recorder.isRecording();
@@ -49,23 +59,53 @@ class AudioCaptureService {
 
       // Get selected device ID if available
       final selectedDeviceId = await getSelectedDeviceId();
-      
+
+      // Always list devices so we can handle unplug/replug gracefully.
+      final devices = await _recorder.listInputDevices();
+
       // Try to find and use the selected device
       InputDevice? selectedDevice;
       if (selectedDeviceId != null && selectedDeviceId.isNotEmpty) {
-        try {
-          final devices = await _recorder.listInputDevices();
-          final device = devices.firstWhere(
-            (d) => d.id == selectedDeviceId,
-            orElse: () => InputDevice(id: '', label: ''),
-          );
-          if (device.id.isNotEmpty) {
-            selectedDevice = device;
-            print('[AudioCaptureService] Using selected audio device: ${device.label} (${device.id})');
-          }
-        } catch (e) {
-          print('[AudioCaptureService] Error finding device, using default: $e');
+        final match = devices.where((d) => d.id == selectedDeviceId).toList();
+        if (match.isNotEmpty) {
+          selectedDevice = match.first;
+        } else {
+          selectedDeviceNotFound = true;
+          usedFallbackDevice = true;
         }
+      } else {
+        usedFallbackDevice = true;
+      }
+
+      // If no selected device (or it disappeared), pick a safer fallback than "whatever Windows default is".
+      if (selectedDevice == null && devices.isNotEmpty) {
+        final blacklist = <String>[
+          'stereo mix',
+          'what u hear',
+          'loopback',
+          'virtual',
+          'cable',
+          'voicemeeter',
+        ];
+        int score(InputDevice d) {
+          final label = d.label.toLowerCase();
+          if (label.trim().isEmpty) return -10;
+          if (blacklist.any((b) => label.contains(b))) return -1000;
+          var s = 0;
+          if (label.contains('microphone') || label.contains('mic')) s += 10;
+          return s;
+        }
+
+        InputDevice best = devices.first;
+        var bestScore = score(best);
+        for (final d in devices.skip(1)) {
+          final s = score(d);
+          if (s > bestScore) {
+            best = d;
+            bestScore = s;
+          }
+        }
+        selectedDevice = best;
       }
       
       // Start recording microphone with streaming
@@ -79,9 +119,15 @@ class AudioCaptureService {
           device: selectedDevice?.id.isNotEmpty == true ? selectedDevice : null,
         ),
       );
-      
-      if (selectedDevice == null) {
-        print('[AudioCaptureService] Using default audio device');
+
+      lastUsedDeviceId = selectedDevice?.id;
+      lastUsedDeviceLabel = selectedDevice?.label;
+      if (selectedDeviceNotFound) {
+        print('[AudioCaptureService] Selected device not found (unplugged/reconnected?). Using fallback: ${selectedDevice?.label ?? 'default'}');
+      } else if (usedFallbackDevice) {
+        print('[AudioCaptureService] Using fallback audio device: ${selectedDevice?.label ?? 'default'}');
+      } else if (selectedDevice != null) {
+        print('[AudioCaptureService] Using selected audio device: ${selectedDevice.label} (${selectedDevice.id})');
       }
 
       print('[AudioCaptureService] Audio stream started');
