@@ -697,9 +697,6 @@ class SpeechToTextProvider extends ChangeNotifier {
             if (_recordingStartTime != null && _isSystemAudioCapturing) {
               final timeSinceStart = now.difference(_recordingStartTime!);
               if (timeSinceStart < _initialSuppressionWindow) {
-                if (_audioFrameCount % 50 == 0) {
-                  print('[SpeechToTextProvider] Suppressing mic audio (early meeting, ${timeSinceStart.inMilliseconds}ms/${_initialSuppressionWindow.inMilliseconds}ms since start, system audio active)');
-                }
                 return;
               }
             }
@@ -713,9 +710,6 @@ class SpeechToTextProvider extends ChangeNotifier {
               
               // If system has transcripts but mic doesn't, and we're in early period, suppress mic
               if (hasSystemTranscripts && !hasMicTranscripts && timeSinceStart < _initialSuppressionWindow) {
-                if (_audioFrameCount % 50 == 0) {
-                  print('[SpeechToTextProvider] Suppressing mic audio (system has transcripts, mic does not, early period)');
-                }
                 return;
               }
             }
@@ -728,9 +722,6 @@ class SpeechToTextProvider extends ChangeNotifier {
                 final timeSinceSystemFinal = now.difference(_lastSystemFinalTime!);
                 if (timeSinceSystemFinal < _micSuppressionWindow) {
                   // Skip sending mic audio - it's likely echo from system audio
-                  if (_audioFrameCount % 100 == 0) {
-                    print('[SpeechToTextProvider] Suppressing mic audio (system active, ${timeSinceSystemFinal.inMilliseconds}ms since system final)');
-                  }
                   return;
                 }
               }
@@ -741,9 +732,6 @@ class SpeechToTextProvider extends ChangeNotifier {
               final timeSinceSystemFinal = now.difference(_lastSystemFinalTime!);
               if (timeSinceSystemFinal < _micSuppressionWindow) {
                 // Skip sending mic audio - it's likely echo from system audio
-                if (_audioFrameCount % 100 == 0) {
-                  print('[SpeechToTextProvider] Suppressing mic audio (${timeSinceSystemFinal.inMilliseconds}ms since system final)');
-                }
                 return;
               }
               // Clear suppression timestamp if window has passed
@@ -753,9 +741,6 @@ class SpeechToTextProvider extends ChangeNotifier {
             }
             
             _audioFrameCount++;
-            if (_audioFrameCount % 10 == 0) {
-              print('[SpeechToTextProvider] Audio frame #$_audioFrameCount: ${audioData.length} bytes');
-            }
             // Final check before sending - must not be stopping
             if (!_isStopping && _transcriptionService != null) {
               try {
@@ -832,9 +817,6 @@ class SpeechToTextProvider extends ChangeNotifier {
             if (_recordingStartTime != null && _isSystemAudioCapturing) {
               final timeSinceStart = now.difference(_recordingStartTime!);
               if (timeSinceStart < _initialSuppressionWindow) {
-                if (_audioFrameCount % 50 == 0) {
-                  print('[SpeechToTextProvider] Suppressing mic audio (early meeting, ${timeSinceStart.inMilliseconds}ms/${_initialSuppressionWindow.inMilliseconds}ms since start, system audio active)');
-                }
                 return;
               }
             }
@@ -848,9 +830,6 @@ class SpeechToTextProvider extends ChangeNotifier {
               
               // If system has transcripts but mic doesn't, and we're in early period, suppress mic
               if (hasSystemTranscripts && !hasMicTranscripts && timeSinceStart < _initialSuppressionWindow) {
-                if (_audioFrameCount % 50 == 0) {
-                  print('[SpeechToTextProvider] Suppressing mic audio (system has transcripts, mic does not, early period)');
-                }
                 return;
               }
             }
@@ -860,9 +839,6 @@ class SpeechToTextProvider extends ChangeNotifier {
               if (_lastSystemFinalTime != null) {
                 final timeSinceSystemFinal = now.difference(_lastSystemFinalTime!);
                 if (timeSinceSystemFinal < _micSuppressionWindow) {
-                  if (_audioFrameCount % 100 == 0) {
-                    print('[SpeechToTextProvider] Suppressing mic audio (system active, ${timeSinceSystemFinal.inMilliseconds}ms since system final)');
-                  }
                   return;
                 }
               }
@@ -872,9 +848,6 @@ class SpeechToTextProvider extends ChangeNotifier {
             if (_lastSystemFinalTime != null) {
               final timeSinceSystemFinal = now.difference(_lastSystemFinalTime!);
               if (timeSinceSystemFinal < _micSuppressionWindow) {
-                if (_audioFrameCount % 100 == 0) {
-                  print('[SpeechToTextProvider] Suppressing mic audio (${timeSinceSystemFinal.inMilliseconds}ms since system final)');
-                }
                 return;
               }
               if (timeSinceSystemFinal >= _micSuppressionWindow) {
@@ -883,9 +856,6 @@ class SpeechToTextProvider extends ChangeNotifier {
             }
             
             _audioFrameCount++;
-            if (_audioFrameCount % 10 == 0) {
-              print('[SpeechToTextProvider] Audio frame #$_audioFrameCount: ${audioData.length} bytes');
-            }
             // Final check before sending - must not be stopping
             if (!_isStopping && _isRecording && _transcriptionService != null) {
               try {
@@ -991,7 +961,7 @@ class SpeechToTextProvider extends ChangeNotifier {
         try {
           // Stop audio capture services (mic first, then system)
           try {
-            await _audioCaptureService?.stopCapturing();
+            await _audioCaptureService?.stopCapturing().timeout(const Duration(seconds: 4));
           } catch (e) {
             print('[SpeechToTextProvider] Error stopping audio capture: $e');
           }
@@ -999,7 +969,7 @@ class SpeechToTextProvider extends ChangeNotifier {
           // Stop system audio capture (native Windows service)
           if (!kIsWeb && Platform.isWindows && _isSystemAudioCapturing) {
             try {
-              await WindowsAudioService.stopSystemAudioCapture();
+              await WindowsAudioService.stopSystemAudioCapture().timeout(const Duration(seconds: 4));
             } catch (e) {
               print('[SpeechToTextProvider] Error stopping system audio capture: $e');
             }
@@ -1049,7 +1019,7 @@ class SpeechToTextProvider extends ChangeNotifier {
         try {
           // Try to clean up as much as possible
           try {
-            await _audioCaptureService?.stopCapturing();
+            await _audioCaptureService?.stopCapturing().timeout(const Duration(seconds: 4));
           } catch (_) {}
           try {
             _audioCaptureService?.dispose();
@@ -1057,7 +1027,7 @@ class SpeechToTextProvider extends ChangeNotifier {
           _audioCaptureService = null;
           if (!kIsWeb && Platform.isWindows && _isSystemAudioCapturing) {
             try {
-              await WindowsAudioService.stopSystemAudioCapture();
+              await WindowsAudioService.stopSystemAudioCapture().timeout(const Duration(seconds: 4));
             } catch (_) {}
           }
           _isSystemAudioCapturing = false;

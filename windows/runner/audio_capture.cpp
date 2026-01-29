@@ -133,7 +133,6 @@ static void MonoFloatToPcm16Bytes(const std::vector<float>& inMono,
 }  // namespace
 
 AudioCapture::AudioCapture() : is_capturing_(false), is_initialized_(false) {
-  std::cout << "[AudioCapture] Initialized" << std::endl;
 }
 
 AudioCapture::~AudioCapture() {
@@ -142,8 +141,6 @@ AudioCapture::~AudioCapture() {
 }
 
 bool AudioCapture::StartSystemAudio() {
-  std::cout << "[AudioCapture] Starting system audio capture" << std::endl;
-  
   if (!is_initialized_) {
     if (!InitializeWASAPI()) {
       std::cerr << "[AudioCapture] Failed to initialize WASAPI" << std::endl;
@@ -171,13 +168,11 @@ bool AudioCapture::StartSystemAudio() {
     return false;
   }
   
-  std::cout << "[AudioCapture] System audio capture started" << std::endl;
   return true;
 }
 
 void AudioCapture::StopSystemAudio() {
   if (is_capturing_) {
-    std::cout << "[AudioCapture] Stopping system audio capture" << std::endl;
     is_capturing_ = false;
     
     if (audio_client_) {
@@ -215,8 +210,6 @@ std::vector<uint8_t> AudioCapture::GetSystemAudioFrame(size_t requested_bytes) {
 }
 
 bool AudioCapture::InitializeWASAPI() {
-  std::cout << "[AudioCapture] Initializing WASAPI..." << std::endl;
-  
   // Initialize COM library
   CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   
@@ -343,8 +336,6 @@ HRESULT AudioCapture::FindLoopbackDevice() {
 }
 
 void AudioCapture::CaptureThreadProc() {
-  std::cout << "[AudioCapture] Capture thread started" << std::endl;
-
   // COM must be initialized per-thread before using COM interfaces.
   CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   
@@ -412,7 +403,5 @@ void AudioCapture::CaptureThreadProc() {
     }
   }
   
-  std::cout << "[AudioCapture] Capture thread ended" << std::endl;
-
   CoUninitialize();
 }

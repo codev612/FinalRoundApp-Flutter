@@ -46,7 +46,6 @@ class TranscriptionService {
             return;
           }
           
-          print('[TranscriptionService] Received: $message');
           final data = jsonDecode(message);
 
           if (data['type'] == 'transcript') {
@@ -68,7 +67,6 @@ class TranscriptionService {
           }
 
           if (data['type'] == 'status') {
-            print('[TranscriptionService] Status: ${data['message']}');
             return;
           }
 
@@ -117,7 +115,6 @@ class TranscriptionService {
       };
 
       final base64Audio = base64Encode(audioBytes);
-      print('[TranscriptionService] Sending audio with source: "$source"');
       channel.sink.add(
         jsonEncode({
           'type': 'audio',

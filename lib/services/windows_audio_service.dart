@@ -7,7 +7,6 @@ class WindowsAudioService {
   /// Start capturing system audio (Windows Stereo Mix / Loopback)
   static Future<bool> startSystemAudioCapture() async {
     try {
-      print('[WindowsAudioService] Starting system audio capture');
       final result = await platform.invokeMethod<bool>('startSystemAudio');
       return result ?? false;
     } catch (e) {
@@ -19,7 +18,6 @@ class WindowsAudioService {
   /// Stop capturing system audio
   static Future<void> stopSystemAudioCapture() async {
     try {
-      print('[WindowsAudioService] Stopping system audio capture');
       await platform.invokeMethod('stopSystemAudio');
     } catch (e) {
       print('[WindowsAudioService] Error stopping system audio: $e');

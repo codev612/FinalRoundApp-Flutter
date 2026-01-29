@@ -90,7 +90,6 @@ class AudioCaptureService {
       _audioSubscription = recordStream.listen(
         (data) {
           if (data.isNotEmpty) {
-            print('[AudioCaptureService] Audio frame received: ${data.length} bytes');
             onAudioData(data);
           }
         },
@@ -110,12 +109,28 @@ class AudioCaptureService {
   Future<void> stopCapturing() async {
     try {
       print('[AudioCaptureService] Stopping audio capture...');
-      _audioSubscription?.cancel();
+      try {
+        // Avoid hanging forever if stream cancel never completes.
+        await _audioSubscription?.cancel().timeout(const Duration(seconds: 2));
+      } catch (e) {
+        print('[AudioCaptureService] Error canceling audio stream subscription: $e');
+      }
+      _audioSubscription = null;
       
-      final isRecording = await _recorder.isRecording();
+      bool isRecording = false;
+      try {
+        isRecording = await _recorder.isRecording().timeout(const Duration(seconds: 2));
+      } catch (e) {
+        print('[AudioCaptureService] Error checking isRecording(): $e');
+      }
       if (isRecording) {
-        final path = await _recorder.stop();
-        print('[AudioCaptureService] Recording stopped at: $path');
+        try {
+          final path = await _recorder.stop().timeout(const Duration(seconds: 3));
+          print('[AudioCaptureService] Recording stopped at: $path');
+        } catch (e) {
+          // This is the most common hang point on some systems. Don’t block UI.
+          print('[AudioCaptureService] Error stopping recorder: $e');
+        }
       }
     } catch (e) {
       print('[AudioCaptureService] Error stopping capture: $e');
