@@ -100,23 +100,37 @@ class MeetingSession {
       updatedAt = updatedAtParsed.isUtc ? updatedAtParsed.toLocal() : updatedAtParsed;
     }
 
+    // Defensive: some legacy/bad payloads may have bubbles as a map/object.
+    final rawBubbles = json['bubbles'];
+    final bubblesList = switch (rawBubbles) {
+      List<dynamic> v => v,
+      Map v => v.values.toList(growable: false),
+      _ => const <dynamic>[],
+    };
+
     return MeetingSession(
       id: json['id'] as String,
       title: json['title'] as String,
       createdAt: createdAt,
       updatedAt: updatedAt,
-      bubbles: (json['bubbles'] as List<dynamic>)
-          .map((b) {
-            final timestampParsed = DateTime.parse(b['timestamp'] as String);
-            final timestamp = timestampParsed.isUtc ? timestampParsed.toLocal() : timestampParsed;
-            return TranscriptBubble(
-              source: sourceFromString(b['source'] as String),
-              text: b['text'] as String,
-              timestamp: timestamp,
-              isDraft: b['isDraft'] as bool? ?? false,
-            );
-          })
-          .toList(),
+      bubbles: bubblesList.map((b) {
+        final m = (b is Map) ? Map<String, dynamic>.from(b) : <String, dynamic>{};
+        final tsRaw = m['timestamp'];
+        DateTime timestamp;
+        try {
+          final parsed = DateTime.parse(tsRaw is String ? tsRaw : '');
+          timestamp = parsed.isUtc ? parsed.toLocal() : parsed;
+        } catch (_) {
+          timestamp = createdAt;
+        }
+
+        return TranscriptBubble(
+          source: sourceFromString((m['source'] as String?) ?? 'unknown'),
+          text: (m['text'] as String?) ?? '',
+          timestamp: timestamp,
+          isDraft: m['isDraft'] as bool? ?? false,
+        );
+      }).toList(),
       summary: json['summary'] as String?,
       insights: json['insights'] as String?,
       questions: json['questions'] as String?,

@@ -144,8 +144,17 @@ class MeetingStorageService {
         throw Exception(error);
       }
 
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-      final sessionsList = data['sessions'] as List<dynamic>;
+      final decoded = jsonDecode(response.body);
+      // Support both:
+      // - { sessions: [...], total: ... } (current)
+      // - [...] (legacy)
+      // - { sessions: { ... } } (bad/legacy data) -> treat values as list
+      final dynamic sessionsRaw = decoded is Map<String, dynamic> ? decoded['sessions'] : decoded;
+      final List<dynamic> sessionsList = switch (sessionsRaw) {
+        List<dynamic> v => v,
+        Map v => v.values.toList(growable: false),
+        _ => const <dynamic>[],
+      };
       return sessionsList
           .map((item) => MeetingSession.fromJson(item as Map<String, dynamic>))
           .toList();

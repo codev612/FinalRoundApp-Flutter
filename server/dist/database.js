@@ -147,16 +147,24 @@ const formatSessionForApi = (session) => {
             return date;
         return null;
     };
+    // Defensive: some legacy/bad documents may have bubbles saved as an object/map.
+    // Normalize to an array so clients don't crash while parsing.
+    const rawBubbles = session.bubbles;
+    const bubblesArray = Array.isArray(rawBubbles)
+        ? rawBubbles
+        : rawBubbles && typeof rawBubbles === 'object'
+            ? Object.values(rawBubbles)
+            : [];
     return {
         id: session._id?.toString() || session.id,
         title: session.title,
         createdAt: formatDate(session.createdAt),
         updatedAt: formatDate(session.updatedAt),
-        bubbles: session.bubbles.map((b) => ({
-            source: b.source,
-            text: b.text,
-            timestamp: formatDate(b.timestamp),
-            isDraft: b.isDraft,
+        bubbles: bubblesArray.map((b) => ({
+            source: String(b?.source ?? 'unknown'),
+            text: String(b?.text ?? ''),
+            timestamp: formatDate(b?.timestamp ?? null),
+            isDraft: Boolean(b?.isDraft ?? false),
         })),
         summary: session.summary,
         insights: session.insights,
