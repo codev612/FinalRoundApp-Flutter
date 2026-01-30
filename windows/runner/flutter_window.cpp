@@ -9,6 +9,7 @@
 #include <flutter/standard_method_codec.h>
 #include <windows.h>
 #include <winuser.h>
+#include <dwmapi.h>
 
 #include "flutter/generated_plugin_registrant.h"
 #include "audio_capture.h"
@@ -28,6 +29,33 @@ namespace {
 #ifndef PW_RENDERFULLCONTENT
 #define PW_RENDERFULLCONTENT 0x00000002
 #endif
+
+#pragma comment(lib, "dwmapi.lib")
+
+// Some Windows SDKs don't declare these DWM APIs depending on target macros.
+// To stay compatible, resolve them dynamically from dwmapi.dll.
+using DwmGetIconicLivePreviewBitmapFn = HRESULT(WINAPI*)(HWND, HBITMAP*, POINT*, DWORD);
+using DwmGetIconicThumbnailFn = HRESULT(WINAPI*)(HWND, UINT, UINT, HBITMAP*, DWORD);
+
+DwmGetIconicLivePreviewBitmapFn ResolveDwmGetIconicLivePreviewBitmap() {
+  static DwmGetIconicLivePreviewBitmapFn fn = []() -> DwmGetIconicLivePreviewBitmapFn {
+    HMODULE mod = LoadLibraryW(L"dwmapi.dll");
+    if (!mod) return nullptr;
+    return reinterpret_cast<DwmGetIconicLivePreviewBitmapFn>(
+        GetProcAddress(mod, "DwmGetIconicLivePreviewBitmap"));
+  }();
+  return fn;
+}
+
+DwmGetIconicThumbnailFn ResolveDwmGetIconicThumbnail() {
+  static DwmGetIconicThumbnailFn fn = []() -> DwmGetIconicThumbnailFn {
+    HMODULE mod = LoadLibraryW(L"dwmapi.dll");
+    if (!mod) return nullptr;
+    return reinterpret_cast<DwmGetIconicThumbnailFn>(
+        GetProcAddress(mod, "DwmGetIconicThumbnail"));
+  }();
+  return fn;
+}
 
 std::string WideToUtf8(const wchar_t* w) {
   if (!w) return std::string();
@@ -60,6 +88,45 @@ void ScaleToFit(int src_w, int src_h, int max_w, int max_h, int& out_w, int& out
   if (out_h < 1) out_h = 1;
 }
 
+bool ReadHBitmapToBgra(HBITMAP hbmp, std::vector<uint8_t>& out, int& width, int& height) {
+  if (!hbmp) return false;
+
+  BITMAP bm{};
+  if (GetObject(hbmp, sizeof(bm), &bm) == 0) return false;
+  if (bm.bmWidth <= 0 || bm.bmHeight <= 0) return false;
+
+  width = bm.bmWidth;
+  height = bm.bmHeight;
+
+  BITMAPINFO bmi{};
+  bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bmi.bmiHeader.biWidth = width;
+  bmi.bmiHeader.biHeight = -height;  // top-down
+  bmi.bmiHeader.biPlanes = 1;
+  bmi.bmiHeader.biBitCount = 32;
+  bmi.bmiHeader.biCompression = BI_RGB;
+
+  const size_t size = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
+  out.resize(size);
+
+  HDC dc = GetDC(nullptr);
+  if (!dc) return false;
+  const int lines = GetDIBits(dc, hbmp, 0, static_cast<UINT>(height), out.data(), &bmi, DIB_RGB_COLORS);
+  ReleaseDC(nullptr, dc);
+  return lines == height;
+}
+
+void ForceDwmIconicBitmaps(HWND hwnd) {
+  if (!hwnd) return;
+  // Best-effort: ask DWM to use iconic representation/bitmaps for this window.
+  // Some apps only start producing thumbnails after invalidation.
+  BOOL on = TRUE;
+  // These calls may fail for some windows/processes; ignore failures.
+  DwmSetWindowAttribute(hwnd, DWMWA_FORCE_ICONIC_REPRESENTATION, &on, sizeof(on));
+  DwmSetWindowAttribute(hwnd, DWMWA_HAS_ICONIC_BITMAP, &on, sizeof(on));
+  DwmInvalidateIconicBitmaps(hwnd);
+}
+
 bool IsShareableTopLevelWindow(HWND hwnd, HWND self) {
   if (!hwnd) return false;
   if (self && (hwnd == self || IsChild(self, hwnd))) return false;
@@ -85,6 +152,83 @@ bool CaptureWindowBgra(HWND hwnd, std::vector<uint8_t>& out, int& width, int& he
   width = rc.right - rc.left;
   height = rc.bottom - rc.top;
   if (width <= 0 || height <= 0) return false;
+
+  // For some minimized apps, DWM only provides an icon-like snapshot. We'll prefer
+  // a real restored capture when possible, and only fall back to DWM if restore
+  // capture fails.
+  std::vector<uint8_t> dwm_fallback_bytes;
+  int dwm_fallback_w = 0;
+  int dwm_fallback_h = 0;
+  bool have_dwm_fallback = false;
+
+  const bool was_iconic = IsIconic(hwnd) ? true : false;
+  if (was_iconic) {
+    ForceDwmIconicBitmaps(hwnd);
+
+    // For minimized windows, PrintWindow/BitBlt often return blank.
+    // Prefer DWM "iconic" bitmaps (works for many apps even when minimized).
+    HBITMAP hbmp = nullptr;
+    if (auto live_fn = ResolveDwmGetIconicLivePreviewBitmap()) {
+      HRESULT hr = live_fn(hwnd, &hbmp, nullptr, 0);
+    if (SUCCEEDED(hr) && hbmp) {
+      int bw = 0, bh = 0;
+      if (ReadHBitmapToBgra(hbmp, dwm_fallback_bytes, bw, bh)) {
+        DeleteObject(hbmp);
+        dwm_fallback_w = bw;
+        dwm_fallback_h = bh;
+        have_dwm_fallback = true;
+      }
+      DeleteObject(hbmp);
+    }
+    }
+
+    hbmp = nullptr;
+    const UINT tw = static_cast<UINT>(width > 0 ? width : 1);
+    const UINT th = static_cast<UINT>(height > 0 ? height : 1);
+    if (auto thumb_fn = ResolveDwmGetIconicThumbnail()) {
+      for (int attempt = 0; attempt < 3; attempt++) {
+        HRESULT hr = thumb_fn(hwnd, tw, th, &hbmp, 0);
+        if (SUCCEEDED(hr) && hbmp) {
+          int bw = 0, bh = 0;
+          if (ReadHBitmapToBgra(hbmp, dwm_fallback_bytes, bw, bh)) {
+            DeleteObject(hbmp);
+            dwm_fallback_w = bw;
+            dwm_fallback_h = bh;
+            have_dwm_fallback = true;
+            // Keep trying restored capture for best fidelity.
+            break;
+          }
+          DeleteObject(hbmp);
+          hbmp = nullptr;
+        }
+        // Some apps need a tick after invalidation before DWM produces a bitmap.
+        Sleep(30);
+        ForceDwmIconicBitmaps(hwnd);
+      }
+    }
+  }
+
+  bool restored_from_iconic = false;
+  if (was_iconic) {
+    // Last resort: temporarily restore without activation and capture.
+    // This can cause a brief visual change, but avoids blank captures.
+    ShowWindowAsync(hwnd, SW_SHOWNOACTIVATE);
+    restored_from_iconic = true;
+    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    DwmFlush();
+    Sleep(120);
+
+    // Recompute dimensions after restore: minimized windows can report tiny rects.
+    RECT rc2{};
+    if (GetWindowRect(hwnd, &rc2)) {
+      const int w2 = rc2.right - rc2.left;
+      const int h2 = rc2.bottom - rc2.top;
+      if (w2 > 0 && h2 > 0) {
+        width = w2;
+        height = h2;
+      }
+    }
+  }
 
   HDC screen_dc = GetDC(nullptr);
   if (!screen_dc) return false;
@@ -129,6 +273,13 @@ bool CaptureWindowBgra(HWND hwnd, std::vector<uint8_t>& out, int& width, int& he
     DeleteObject(dib);
     DeleteDC(mem_dc);
     ReleaseDC(nullptr, screen_dc);
+    if (restored_from_iconic) ShowWindowAsync(hwnd, SW_MINIMIZE);
+    if (have_dwm_fallback) {
+      out = std::move(dwm_fallback_bytes);
+      width = dwm_fallback_w;
+      height = dwm_fallback_h;
+      return true;
+    }
     return false;
   }
 
@@ -140,6 +291,7 @@ bool CaptureWindowBgra(HWND hwnd, std::vector<uint8_t>& out, int& width, int& he
   DeleteObject(dib);
   DeleteDC(mem_dc);
   ReleaseDC(nullptr, screen_dc);
+  if (restored_from_iconic) ShowWindowAsync(hwnd, SW_MINIMIZE);
   return true;
 }
 
@@ -153,6 +305,35 @@ bool CaptureWindowBgraScaled(HWND hwnd, int target_w, int target_h, std::vector<
   width = target_w > 0 ? target_w : src_w;
   height = target_h > 0 ? target_h : src_h;
   if (width <= 0 || height <= 0) return false;
+
+  if (IsIconic(hwnd)) {
+    ForceDwmIconicBitmaps(hwnd);
+
+    // Thumbnail preview for minimized windows via DWM.
+    HBITMAP hbmp = nullptr;
+    const UINT tw = static_cast<UINT>(width);
+    const UINT th = static_cast<UINT>(height);
+    if (auto thumb_fn = ResolveDwmGetIconicThumbnail()) {
+      for (int attempt = 0; attempt < 3; attempt++) {
+        const HRESULT hr = thumb_fn(hwnd, tw, th, &hbmp, 0);
+        if (SUCCEEDED(hr) && hbmp) {
+          int bw = 0, bh = 0;
+          if (ReadHBitmapToBgra(hbmp, out, bw, bh)) {
+            DeleteObject(hbmp);
+            width = bw;
+            height = bh;
+            return true;
+          }
+          DeleteObject(hbmp);
+          hbmp = nullptr;
+        }
+        Sleep(30);
+        ForceDwmIconicBitmaps(hwnd);
+      }
+    }
+    // If DWM thumbnail isn't available, avoid restoring windows just for previews.
+    return false;
+  }
 
   HDC screen_dc = GetDC(nullptr);
   if (!screen_dc) return false;
