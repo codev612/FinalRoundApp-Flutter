@@ -452,6 +452,37 @@ app.get('/api/billing/me', authenticate, async (req: AuthRequest, res: Response)
     const limitMinutes = ent.transcriptionMinutesPerMonth;
     const remainingMinutes = Math.max(0, limitMinutes - usedMinutes);
 
+    const usageStats = await getUserApiUsageStats(userId, start, end);
+    const aiLimitTokens = ent.aiTokensPerMonth;
+    const aiUsedTokens = usageStats.totalTokens ?? 0;
+    const aiRemainingTokens = Math.max(0, aiLimitTokens - aiUsedTokens);
+    const aiLimitRequests = (ent as any).aiRequestsPerMonth as number | undefined;
+    const aiUsedRequests = usageStats.totalRequests ?? 0;
+    const aiRemainingRequests = typeof aiLimitRequests === 'number'
+      ? Math.max(0, aiLimitRequests - aiUsedRequests)
+      : undefined;
+
+    // Per-model metering (monthly)
+    const byModelUsage = usageStats.byModel ?? {};
+    const modelKeys = new Set<string>([
+      ...Object.keys(byModelUsage),
+      ...ent.allowedModels,
+    ]);
+    const perModelCaps: Record<string, number> | undefined = (ent as any).aiTokensPerMonthByModel;
+    const byModel: Record<string, { usedTokens: number; requests: number; limitTokens?: number; remainingTokens?: number }> = {};
+    for (const m of modelKeys) {
+      const usedTokens = byModelUsage[m]?.tokens ?? 0;
+      const requests = byModelUsage[m]?.requests ?? 0;
+      const limitTokens = perModelCaps?.[m];
+      byModel[m] = {
+        usedTokens,
+        requests,
+        ...(typeof limitTokens === 'number'
+          ? { limitTokens, remainingTokens: Math.max(0, limitTokens - usedTokens) }
+          : {}),
+      };
+    }
+
     return res.json({
       plan: ent.plan,
       billingPeriod: {
@@ -466,6 +497,13 @@ app.get('/api/billing/me', authenticate, async (req: AuthRequest, res: Response)
       ai: {
         canUseSummary: ent.canUseSummary,
         allowedModels: ent.allowedModels,
+        limitTokens: aiLimitTokens,
+        usedTokens: aiUsedTokens,
+        remainingTokens: aiRemainingTokens,
+        limitRequests: aiLimitRequests,
+        usedRequests: aiUsedRequests,
+        ...(aiRemainingRequests === undefined ? {} : { remainingRequests: aiRemainingRequests }),
+        byModel,
       },
     });
   } catch (error: any) {
@@ -513,6 +551,18 @@ const planEntitlements = (plan: PlanTier) => {
       return {
         plan,
         transcriptionMinutesPerMonth: 6000,
+        aiTokensPerMonth: 2_000_000,
+        aiRequestsPerMonth: 20_000,
+        // Per-model token caps (monthly). These sum to aiTokensPerMonth.
+        aiTokensPerMonthByModel: {
+          'gpt-5.2': 600_000,
+          'gpt-5': 500_000,
+          'gpt-5.1': 300_000,
+          'gpt-4.1': 250_000,
+          'gpt-4.1-mini': 200_000,
+          'gpt-4o': 75_000,
+          'gpt-4o-mini': 75_000,
+        },
         canUseSummary: true,
         allowedModels: ['gpt-5.2', 'gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'],
       };
@@ -520,6 +570,17 @@ const planEntitlements = (plan: PlanTier) => {
       return {
         plan,
         transcriptionMinutesPerMonth: 1500,
+        aiTokensPerMonth: 500_000,
+        aiRequestsPerMonth: 5_000,
+        // Per-model token caps (monthly). These sum to aiTokensPerMonth.
+        aiTokensPerMonthByModel: {
+          'gpt-5': 200_000,
+          'gpt-5.1': 100_000,
+          'gpt-4.1': 75_000,
+          'gpt-4.1-mini': 75_000,
+          'gpt-4o': 25_000,
+          'gpt-4o-mini': 25_000,
+        },
         canUseSummary: true,
         allowedModels: ['gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'],
       };
@@ -528,6 +589,13 @@ const planEntitlements = (plan: PlanTier) => {
       return {
         plan: 'free' as const,
         transcriptionMinutesPerMonth: 600,
+        aiTokensPerMonth: 50_000,
+        aiRequestsPerMonth: 200,
+        // Per-model token caps (monthly). These sum to aiTokensPerMonth.
+        aiTokensPerMonthByModel: {
+          'gpt-4.1-mini': 40_000,
+          'gpt-4.1': 10_000,
+        },
         canUseSummary: false,
         allowedModels: ['gpt-4.1-mini', 'gpt-4.1'],
       };
@@ -539,6 +607,162 @@ const getCurrentBillingPeriodUtc = () => {
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
   const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0, 0));
   return { start, end };
+};
+
+type AiUsageStats = Awaited<ReturnType<typeof getUserApiUsageStats>>;
+
+const isAutoModelRequested = (m: any): boolean => {
+  return typeof m === 'string' && m.trim().toLowerCase() === 'auto';
+};
+
+const checkMonthlyAiBudgetsOrThrow = (stats: AiUsageStats, ent: any, model?: string) => {
+  // Global monthly token cap
+  const usedTokens = stats.totalTokens ?? 0;
+  const tokenLimit = ent.aiTokensPerMonth ?? 0;
+  if (typeof tokenLimit === 'number' && tokenLimit > 0 && usedTokens >= tokenLimit) {
+    const err: any = new Error('AI token limit reached for this month. Upgrade your plan to continue.');
+    err.statusCode = 402;
+    throw err;
+  }
+
+  // Global monthly request cap
+  const usedRequests = stats.totalRequests ?? 0;
+  const reqLimit = ent.aiRequestsPerMonth as number | undefined;
+  if (typeof reqLimit === 'number' && reqLimit > 0 && usedRequests >= reqLimit) {
+    const err: any = new Error('AI request limit reached for this month. Upgrade your plan to continue.');
+    err.statusCode = 402;
+    throw err;
+  }
+
+  // Optional per-model token cap
+  const modelKey = typeof model === 'string' ? model.trim() : '';
+  const perModelCaps: Record<string, number> | undefined = ent.aiTokensPerMonthByModel;
+  if (modelKey && perModelCaps && typeof perModelCaps[modelKey] === 'number') {
+    const modelLimit = perModelCaps[modelKey]!;
+    const usedByModel = stats.byModel?.[modelKey]?.tokens ?? 0;
+    if (modelLimit > 0 && usedByModel >= modelLimit) {
+      const err: any = new Error(`AI token limit reached for model "${modelKey}" this month. Upgrade your plan to continue.`);
+      err.statusCode = 402;
+      throw err;
+    }
+  }
+};
+
+const preferredModelsForAuto = (plan: PlanTier, requestMode: string): string[] => {
+  const mode = requestMode; // 'reply' | 'summary' | 'insights' | 'questions'
+  if (plan === 'pro_plus') {
+    if (mode === 'reply') return ['gpt-5.2', 'gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o-mini', 'gpt-4o'];
+    if (mode === 'summary' || mode === 'insights') return ['gpt-5.2', 'gpt-5', 'gpt-5.1', 'gpt-4.1'];
+    if (mode === 'questions') return ['gpt-4.1-mini', 'gpt-4.1', 'gpt-5.1', 'gpt-5'];
+  }
+  if (plan === 'pro') {
+    if (mode === 'reply') return ['gpt-5.1', 'gpt-5', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o-mini', 'gpt-4o'];
+    if (mode === 'summary' || mode === 'insights') return ['gpt-5.1', 'gpt-5', 'gpt-4.1'];
+    if (mode === 'questions') return ['gpt-4.1-mini', 'gpt-4.1', 'gpt-5.1', 'gpt-5'];
+  }
+  // free
+  if (mode === 'reply') return ['gpt-4.1-mini', 'gpt-4.1'];
+  return ['gpt-4.1-mini', 'gpt-4.1'];
+};
+
+const pickAutoModel = (opts: {
+  planTier: PlanTier;
+  ent: any;
+  requestMode: string;
+  stats: AiUsageStats;
+}): string => {
+  const { planTier, ent, requestMode, stats } = opts;
+  const allowed: string[] = Array.isArray(ent.allowedModels) ? ent.allowedModels : [];
+  const perModelCaps: Record<string, number> | undefined = ent.aiTokensPerMonthByModel;
+
+  const candidates = [
+    ...preferredModelsForAuto(planTier, requestMode),
+    ...allowed,
+  ];
+
+  const seen = new Set<string>();
+  for (const c of candidates) {
+    const m = String(c || '').trim();
+    if (!m) continue;
+    if (seen.has(m)) continue;
+    seen.add(m);
+    if (!allowed.includes(m)) continue;
+
+    // If this model has a cap and it's exhausted, skip it.
+    const cap = perModelCaps?.[m];
+    if (typeof cap === 'number' && cap > 0) {
+      const usedByModel = stats.byModel?.[m]?.tokens ?? 0;
+      if (usedByModel >= cap) continue;
+    }
+    return m;
+  }
+
+  // Fallback: first allowed model (if any)
+  if (allowed.length > 0) return allowed[0];
+  throw Object.assign(new Error('No models available for this plan.'), { statusCode: 403 });
+};
+
+// In-memory rate limiting + concurrency guards (per-user)
+// NOTE: This resets when the server restarts. Good enough for MVP.
+const aiRateLimitState = new Map<string, { windowStartMs: number; count: number }>();
+const aiInFlightByUser = new Map<string, number>();
+let aiRateLimitCleanupCounter = 0;
+
+const aiRateLimitsForPlan = (plan: PlanTier) => {
+  switch (plan) {
+    case 'pro_plus':
+      return { maxPerMinute: 120, maxConcurrent: 3 };
+    case 'pro':
+      return { maxPerMinute: 60, maxConcurrent: 2 };
+    case 'free':
+    default:
+      return { maxPerMinute: 10, maxConcurrent: 1 };
+  }
+};
+
+const checkAndConsumeAiRateLimit = (userId: string, plan: PlanTier) => {
+  const { maxPerMinute } = aiRateLimitsForPlan(plan);
+  const windowMs = 60_000;
+  const now = Date.now();
+  const state = aiRateLimitState.get(userId) ?? { windowStartMs: now, count: 0 };
+  if (now - state.windowStartMs >= windowMs) {
+    state.windowStartMs = now;
+    state.count = 0;
+  }
+  if (state.count >= maxPerMinute) {
+    const retryAfterMs = Math.max(0, windowMs - (now - state.windowStartMs));
+    return { allowed: false as const, retryAfterMs };
+  }
+  state.count += 1;
+  aiRateLimitState.set(userId, state);
+
+  // occasional cleanup to avoid unbounded growth
+  aiRateLimitCleanupCounter++;
+  if (aiRateLimitCleanupCounter % 500 === 0 && aiRateLimitState.size > 2000) {
+    const cutoff = now - 5 * windowMs;
+    for (const [k, v] of aiRateLimitState.entries()) {
+      if (v.windowStartMs < cutoff) aiRateLimitState.delete(k);
+    }
+  }
+
+  return { allowed: true as const, retryAfterMs: 0 };
+};
+
+const acquireAiConcurrency = (userId: string, plan: PlanTier) => {
+  const { maxConcurrent } = aiRateLimitsForPlan(plan);
+  const current = aiInFlightByUser.get(userId) ?? 0;
+  if (current >= maxConcurrent) {
+    const err: any = new Error('Too many concurrent AI requests. Please wait and try again.');
+    err.statusCode = 429;
+    throw err;
+  }
+  aiInFlightByUser.set(userId, current + 1);
+  return () => {
+    const c = aiInFlightByUser.get(userId) ?? 0;
+    const next = c - 1;
+    if (next <= 0) aiInFlightByUser.delete(userId);
+    else aiInFlightByUser.set(userId, next);
+  };
 };
 
 // AI response endpoint (protected)
@@ -659,8 +883,15 @@ app.post('/ai/respond', authenticate, async (req: AuthRequest, res: Response) =>
     if (modelText.length > 80) {
       return res.status(400).json({ error: 'Model name too long' });
     }
+    const { start: periodStart, end: periodEnd } = getCurrentBillingPeriodUtc();
+    const monthlyStats = await getUserApiUsageStats(userId, periodStart, periodEnd);
 
-    const model = modelText.length > 0 ? modelText : (process.env.OPENAI_MODEL || 'gpt-4o-mini');
+    // Auto model selection: choose best allowed model for plan + mode, with cap-aware fallback.
+    let model = modelText.length > 0 ? modelText : (process.env.OPENAI_MODEL || 'gpt-4o-mini');
+    if (isAutoModelRequested(model) || model.trim().length === 0) {
+      model = pickAutoModel({ planTier: plan, ent, requestMode, stats: monthlyStats });
+    }
+
     if (!ent.allowedModels.includes(model)) {
       return res.status(403).json({ error: `Model not allowed for plan: ${ent.plan}` });
     }
@@ -669,43 +900,72 @@ app.post('/ai/respond', authenticate, async (req: AuthRequest, res: Response) =>
     if (!ent.canUseSummary && requestMode !== 'reply') {
       return res.status(403).json({ error: 'Upgrade required for summaries' });
     }
+
+    // Rate limit (per user, per minute)
+    const rl = checkAndConsumeAiRateLimit(userId, plan);
+    if (!rl.allowed) {
+      return res.status(429).json({ error: 'Rate limit exceeded. Please wait and try again.' });
+    }
+
+    // Monthly AI token budget (Cursor-like quota)
+    try {
+      checkMonthlyAiBudgetsOrThrow(monthlyStats, ent as any, model);
+    } catch (e: any) {
+      const status = typeof e?.statusCode === 'number' ? e.statusCode : 402;
+      return res.status(status).json({ error: e?.message ?? 'AI token limit reached' });
+    }
+
+    // Concurrency limit (per user)
+    let releaseConcurrency: (() => void) | null = null;
+    try {
+      releaseConcurrency = acquireAiConcurrency(userId, plan);
+    } catch (e: any) {
+      const status = typeof e?.statusCode === 'number' ? e.statusCode : 429;
+      return res.status(status).json({ error: e?.message ?? 'Too many concurrent requests' });
+    }
     const maxTokens = requestMode === 'insights' ? 600 : requestMode === 'questions' ? 300 : 400;
 
-    const completion = await openai.chat.completions.create({
-      model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      max_completion_tokens: maxTokens,
-      temperature: 0.2,
-      user: userId, // Track usage per user
-    });
+    try {
+      const completion = await openai.chat.completions.create({
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        max_completion_tokens: maxTokens,
+        temperature: 0.2,
+        user: userId, // Track usage per user
+      });
 
-    const text = completion?.choices?.[0]?.message?.content ?? '';
-    
-    // Capture and store usage
-    if (completion.usage) {
-      try {
-        const sessionId = req.body.sessionId as string | undefined;
-        await saveApiUsage(
-          userId,
-          model,
-          {
-            prompt_tokens: completion.usage.prompt_tokens,
-            completion_tokens: completion.usage.completion_tokens,
-            total_tokens: completion.usage.total_tokens,
-          },
-          requestMode,
-          sessionId
-        );
-      } catch (usageError) {
-        // Log but don't fail the request if usage tracking fails
-        console.error('Failed to save API usage:', usageError);
+      const text = completion?.choices?.[0]?.message?.content ?? '';
+      
+      // Capture and store usage
+      if (completion.usage) {
+        try {
+          const sessionId = req.body.sessionId as string | undefined;
+          await saveApiUsage(
+            userId,
+            model,
+            {
+              prompt_tokens: completion.usage.prompt_tokens,
+              completion_tokens: completion.usage.completion_tokens,
+              total_tokens: completion.usage.total_tokens,
+            },
+            requestMode,
+            sessionId
+          );
+        } catch (usageError) {
+          // Log but don't fail the request if usage tracking fails
+          console.error('Failed to save API usage:', usageError);
+        }
       }
+      
+      return res.json({ text });
+    } finally {
+      try {
+        releaseConcurrency?.();
+      } catch (_) {}
     }
-    
-    return res.json({ text });
   } catch (error: any) {
     console.error('AI respond error:', error);
     const status = typeof error?.status === 'number' ? error.status : 500;
@@ -1177,16 +1437,25 @@ aiWss.on('connection', (ws: WebSocket) => {
       if (modelText.length > 80) {
         return send({ type: 'ai_error', requestId, status: 400, message: 'Model name too long' });
       }
-      const model = modelText.length > 0 ? modelText : (process.env.OPENAI_MODEL || 'gpt-4o-mini');
+      let model = modelText.length > 0 ? modelText : (process.env.OPENAI_MODEL || 'gpt-4o-mini');
       const maxTokens = requestMode === 'insights' ? 600 : requestMode === 'questions' ? 300 : 400;
       const authWs = ws as AuthenticatedWebSocket;
       const userId = authWs.user?.userId ?? '';
 
-      // Enforce pricing tier entitlements (best-effort; defaults to free)
+      // Enforce pricing tier entitlements + quota/rate/concurrency
+      let planTier: PlanTier = 'free';
+      let ent = planEntitlements(planTier);
+      let monthlyStats: AiUsageStats | null = null;
       try {
         const user = userId ? await getUserByIdFull(userId) : undefined;
-        const plan = normalizePlan(user?.plan);
-        const ent = planEntitlements(plan);
+        planTier = normalizePlan(user?.plan);
+        ent = planEntitlements(planTier);
+        const { start: periodStart, end: periodEnd } = getCurrentBillingPeriodUtc();
+        monthlyStats = await getUserApiUsageStats(userId, periodStart, periodEnd);
+
+        if (isAutoModelRequested(model) || model.trim().length === 0) {
+          model = pickAutoModel({ planTier, ent, requestMode, stats: monthlyStats });
+        }
         if (!ent.allowedModels.includes(model)) {
           return send({ type: 'ai_error', requestId, status: 403, message: `Model not allowed for plan: ${ent.plan}` });
         }
@@ -1195,6 +1464,37 @@ aiWss.on('connection', (ws: WebSocket) => {
         }
       } catch (_) {
         // If billing lookup fails, default behavior continues (server-side OpenAI may still reject).
+      }
+
+      if (!userId) {
+        return send({ type: 'ai_error', requestId, status: 401, message: 'Unauthorized' });
+      }
+
+      // Rate limit (per user, per minute)
+      const rl = checkAndConsumeAiRateLimit(userId, planTier);
+      if (!rl.allowed) {
+        return send({ type: 'ai_error', requestId, status: 429, message: 'Rate limit exceeded. Please wait and try again.' });
+      }
+
+      // Monthly AI token budget (global + optional per-model)
+      try {
+        if (!monthlyStats) {
+          const { start: periodStart, end: periodEnd } = getCurrentBillingPeriodUtc();
+          monthlyStats = await getUserApiUsageStats(userId, periodStart, periodEnd);
+        }
+        checkMonthlyAiBudgetsOrThrow(monthlyStats, ent as any, model);
+      } catch (e: any) {
+        const status = typeof e?.statusCode === 'number' ? e.statusCode : 402;
+        return send({ type: 'ai_error', requestId, status, message: e?.message ?? 'AI token limit reached' });
+      }
+
+      // Concurrency limit (per user)
+      let releaseConcurrency: (() => void) | null = null;
+      try {
+        releaseConcurrency = acquireAiConcurrency(userId, planTier);
+      } catch (e: any) {
+        const status = typeof e?.statusCode === 'number' ? e.statusCode : 429;
+        return send({ type: 'ai_error', requestId, status, message: e?.message ?? 'Too many concurrent requests' });
       }
 
       send({ type: 'ai_start', requestId });
@@ -1261,6 +1561,10 @@ aiWss.on('connection', (ws: WebSocket) => {
         const status = typeof error?.status === 'number' ? error.status : 500;
         const msg = error?.error?.message || error?.message || 'Failed to generate AI response';
         return send({ type: 'ai_error', requestId, status, message: msg });
+      } finally {
+        try {
+          releaseConcurrency?.();
+        } catch (_) {}
       }
     } catch (error: any) {
       console.error('AI WS message error:', error);

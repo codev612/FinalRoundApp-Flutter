@@ -241,10 +241,23 @@ app.put('/api/mode-configs/:modeName', authenticate, async (req, res) => {
         if (!modeName) {
             return res.status(400).json({ error: 'Missing mode name' });
         }
+        const user = await getUserByIdFull(userId);
+        const planTier = normalizePlan(user?.plan);
+        const limits = promptLimitsForPlan(planTier);
         const config = {
             realTimePrompt: typeof realTimePrompt === 'string' ? realTimePrompt : '',
             notesTemplate: typeof notesTemplate === 'string' ? notesTemplate : '',
         };
+        if (config.realTimePrompt.length > limits.realTimePromptMaxChars) {
+            return res.status(400).json({
+                error: `Real-time prompt is too long for your plan (max ${limits.realTimePromptMaxChars} chars).`,
+            });
+        }
+        if (config.notesTemplate.length > limits.notesTemplateMaxChars) {
+            return res.status(400).json({
+                error: `Notes template is too long for your plan (max ${limits.notesTemplateMaxChars} chars).`,
+            });
+        }
         await saveModeConfig(userId, modeName, config);
         return res.status(200).json({ mode: modeName, ...config });
     }
@@ -272,6 +285,9 @@ app.put('/api/custom-mode-configs', authenticate, async (req, res) => {
         if (!Array.isArray(body)) {
             return res.status(400).json({ error: 'Body must be an array of custom modes' });
         }
+        const user = await getUserByIdFull(userId);
+        const planTier = normalizePlan(user?.plan);
+        const limits = promptLimitsForPlan(planTier);
         const modes = body.map((m) => ({
             id: String(m?.id ?? ''),
             label: String(m?.label ?? ''),
@@ -279,6 +295,18 @@ app.put('/api/custom-mode-configs', authenticate, async (req, res) => {
             realTimePrompt: String(m?.realTimePrompt ?? ''),
             notesTemplate: String(m?.notesTemplate ?? ''),
         }));
+        for (const m of modes) {
+            if (m.realTimePrompt.length > limits.realTimePromptMaxChars) {
+                return res.status(400).json({
+                    error: `Custom mode "${m.label || m.id}" real-time prompt is too long for your plan (max ${limits.realTimePromptMaxChars} chars).`,
+                });
+            }
+            if (m.notesTemplate.length > limits.notesTemplateMaxChars) {
+                return res.status(400).json({
+                    error: `Custom mode "${m.label || m.id}" notes template is too long for your plan (max ${limits.notesTemplateMaxChars} chars).`,
+                });
+            }
+        }
         await saveCustomModes(userId, modes);
         return res.status(200).json(modes);
     }
@@ -410,6 +438,35 @@ app.get('/api/billing/me', authenticate, async (req, res) => {
         const usedMinutes = Math.floor(usedMs / 60000);
         const limitMinutes = ent.transcriptionMinutesPerMonth;
         const remainingMinutes = Math.max(0, limitMinutes - usedMinutes);
+        const usageStats = await getUserApiUsageStats(userId, start, end);
+        const aiLimitTokens = ent.aiTokensPerMonth;
+        const aiUsedTokens = usageStats.totalTokens ?? 0;
+        const aiRemainingTokens = Math.max(0, aiLimitTokens - aiUsedTokens);
+        const aiLimitRequests = ent.aiRequestsPerMonth;
+        const aiUsedRequests = usageStats.totalRequests ?? 0;
+        const aiRemainingRequests = typeof aiLimitRequests === 'number'
+            ? Math.max(0, aiLimitRequests - aiUsedRequests)
+            : undefined;
+        // Per-model metering (monthly)
+        const byModelUsage = usageStats.byModel ?? {};
+        const modelKeys = new Set([
+            ...Object.keys(byModelUsage),
+            ...ent.allowedModels,
+        ]);
+        const perModelCaps = ent.aiTokensPerMonthByModel;
+        const byModel = {};
+        for (const m of modelKeys) {
+            const usedTokens = byModelUsage[m]?.tokens ?? 0;
+            const requests = byModelUsage[m]?.requests ?? 0;
+            const limitTokens = perModelCaps?.[m];
+            byModel[m] = {
+                usedTokens,
+                requests,
+                ...(typeof limitTokens === 'number'
+                    ? { limitTokens, remainingTokens: Math.max(0, limitTokens - usedTokens) }
+                    : {}),
+            };
+        }
         return res.json({
             plan: ent.plan,
             billingPeriod: {
@@ -424,6 +481,13 @@ app.get('/api/billing/me', authenticate, async (req, res) => {
             ai: {
                 canUseSummary: ent.canUseSummary,
                 allowedModels: ent.allowedModels,
+                limitTokens: aiLimitTokens,
+                usedTokens: aiUsedTokens,
+                remainingTokens: aiRemainingTokens,
+                limitRequests: aiLimitRequests,
+                usedRequests: aiUsedRequests,
+                ...(aiRemainingRequests === undefined ? {} : { remainingRequests: aiRemainingRequests }),
+                byModel,
             },
         });
     }
@@ -469,6 +533,18 @@ const planEntitlements = (plan) => {
             return {
                 plan,
                 transcriptionMinutesPerMonth: 6000,
+                aiTokensPerMonth: 2_000_000,
+                aiRequestsPerMonth: 20_000,
+                // Per-model token caps (monthly). These sum to aiTokensPerMonth.
+                aiTokensPerMonthByModel: {
+                    'gpt-5.2': 600_000,
+                    'gpt-5': 500_000,
+                    'gpt-5.1': 300_000,
+                    'gpt-4.1': 250_000,
+                    'gpt-4.1-mini': 200_000,
+                    'gpt-4o': 75_000,
+                    'gpt-4o-mini': 75_000,
+                },
                 canUseSummary: true,
                 allowedModels: ['gpt-5.2', 'gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'],
             };
@@ -476,6 +552,17 @@ const planEntitlements = (plan) => {
             return {
                 plan,
                 transcriptionMinutesPerMonth: 1500,
+                aiTokensPerMonth: 500_000,
+                aiRequestsPerMonth: 5_000,
+                // Per-model token caps (monthly). These sum to aiTokensPerMonth.
+                aiTokensPerMonthByModel: {
+                    'gpt-5': 200_000,
+                    'gpt-5.1': 100_000,
+                    'gpt-4.1': 75_000,
+                    'gpt-4.1-mini': 75_000,
+                    'gpt-4o': 25_000,
+                    'gpt-4o-mini': 25_000,
+                },
                 canUseSummary: true,
                 allowedModels: ['gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'],
             };
@@ -484,6 +571,13 @@ const planEntitlements = (plan) => {
             return {
                 plan: 'free',
                 transcriptionMinutesPerMonth: 600,
+                aiTokensPerMonth: 50_000,
+                aiRequestsPerMonth: 200,
+                // Per-model token caps (monthly). These sum to aiTokensPerMonth.
+                aiTokensPerMonthByModel: {
+                    'gpt-4.1-mini': 40_000,
+                    'gpt-4.1': 10_000,
+                },
                 canUseSummary: false,
                 allowedModels: ['gpt-4.1-mini', 'gpt-4.1'],
             };
@@ -494,6 +588,179 @@ const getCurrentBillingPeriodUtc = () => {
     const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
     const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0, 0));
     return { start, end };
+};
+const promptLimitsForPlan = (plan) => {
+    // Character-based limits (simple + predictable). This caps user-provided prompts/templates
+    // to prevent accidental huge prompts and to control cost.
+    switch (plan) {
+        case 'pro_plus':
+            return {
+                realTimePromptMaxChars: 8000,
+                notesTemplateMaxChars: 24000,
+                providedSystemPromptMaxChars: 24000, // summary: client-built prompt containing template + instructions
+            };
+        case 'pro':
+            return {
+                realTimePromptMaxChars: 3000,
+                notesTemplateMaxChars: 12000,
+                providedSystemPromptMaxChars: 12000,
+            };
+        case 'free':
+        default:
+            return {
+                realTimePromptMaxChars: 800,
+                notesTemplateMaxChars: 4000,
+                providedSystemPromptMaxChars: 4000,
+            };
+    }
+};
+const isAutoModelRequested = (m) => {
+    return typeof m === 'string' && m.trim().toLowerCase() === 'auto';
+};
+const checkMonthlyAiBudgetsOrThrow = (stats, ent, model) => {
+    // Global monthly token cap
+    const usedTokens = stats.totalTokens ?? 0;
+    const tokenLimit = ent.aiTokensPerMonth ?? 0;
+    if (typeof tokenLimit === 'number' && tokenLimit > 0 && usedTokens >= tokenLimit) {
+        const err = new Error('AI token limit reached for this month. Upgrade your plan to continue.');
+        err.statusCode = 402;
+        throw err;
+    }
+    // Global monthly request cap
+    const usedRequests = stats.totalRequests ?? 0;
+    const reqLimit = ent.aiRequestsPerMonth;
+    if (typeof reqLimit === 'number' && reqLimit > 0 && usedRequests >= reqLimit) {
+        const err = new Error('AI request limit reached for this month. Upgrade your plan to continue.');
+        err.statusCode = 402;
+        throw err;
+    }
+    // Optional per-model token cap
+    const modelKey = typeof model === 'string' ? model.trim() : '';
+    const perModelCaps = ent.aiTokensPerMonthByModel;
+    if (modelKey && perModelCaps && typeof perModelCaps[modelKey] === 'number') {
+        const modelLimit = perModelCaps[modelKey];
+        const usedByModel = stats.byModel?.[modelKey]?.tokens ?? 0;
+        if (modelLimit > 0 && usedByModel >= modelLimit) {
+            const err = new Error(`AI token limit reached for model "${modelKey}" this month. Upgrade your plan to continue.`);
+            err.statusCode = 402;
+            throw err;
+        }
+    }
+};
+const preferredModelsForAuto = (plan, requestMode) => {
+    const mode = requestMode; // 'reply' | 'summary' | 'insights' | 'questions'
+    if (plan === 'pro_plus') {
+        if (mode === 'reply')
+            return ['gpt-5.2', 'gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o-mini', 'gpt-4o'];
+        if (mode === 'summary' || mode === 'insights')
+            return ['gpt-5.2', 'gpt-5', 'gpt-5.1', 'gpt-4.1'];
+        if (mode === 'questions')
+            return ['gpt-4.1-mini', 'gpt-4.1', 'gpt-5.1', 'gpt-5'];
+    }
+    if (plan === 'pro') {
+        if (mode === 'reply')
+            return ['gpt-5.1', 'gpt-5', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o-mini', 'gpt-4o'];
+        if (mode === 'summary' || mode === 'insights')
+            return ['gpt-5.1', 'gpt-5', 'gpt-4.1'];
+        if (mode === 'questions')
+            return ['gpt-4.1-mini', 'gpt-4.1', 'gpt-5.1', 'gpt-5'];
+    }
+    // free
+    if (mode === 'reply')
+        return ['gpt-4.1-mini', 'gpt-4.1'];
+    return ['gpt-4.1-mini', 'gpt-4.1'];
+};
+const pickAutoModel = (opts) => {
+    const { planTier, ent, requestMode, stats } = opts;
+    const allowed = Array.isArray(ent.allowedModels) ? ent.allowedModels : [];
+    const perModelCaps = ent.aiTokensPerMonthByModel;
+    const candidates = [
+        ...preferredModelsForAuto(planTier, requestMode),
+        ...allowed,
+    ];
+    const seen = new Set();
+    for (const c of candidates) {
+        const m = String(c || '').trim();
+        if (!m)
+            continue;
+        if (seen.has(m))
+            continue;
+        seen.add(m);
+        if (!allowed.includes(m))
+            continue;
+        // If this model has a cap and it's exhausted, skip it.
+        const cap = perModelCaps?.[m];
+        if (typeof cap === 'number' && cap > 0) {
+            const usedByModel = stats.byModel?.[m]?.tokens ?? 0;
+            if (usedByModel >= cap)
+                continue;
+        }
+        return m;
+    }
+    // Fallback: first allowed model (if any)
+    if (allowed.length > 0)
+        return allowed[0];
+    throw Object.assign(new Error('No models available for this plan.'), { statusCode: 403 });
+};
+// In-memory rate limiting + concurrency guards (per-user)
+// NOTE: This resets when the server restarts. Good enough for MVP.
+const aiRateLimitState = new Map();
+const aiInFlightByUser = new Map();
+let aiRateLimitCleanupCounter = 0;
+const aiRateLimitsForPlan = (plan) => {
+    switch (plan) {
+        case 'pro_plus':
+            return { maxPerMinute: 120, maxConcurrent: 3 };
+        case 'pro':
+            return { maxPerMinute: 60, maxConcurrent: 2 };
+        case 'free':
+        default:
+            return { maxPerMinute: 10, maxConcurrent: 1 };
+    }
+};
+const checkAndConsumeAiRateLimit = (userId, plan) => {
+    const { maxPerMinute } = aiRateLimitsForPlan(plan);
+    const windowMs = 60_000;
+    const now = Date.now();
+    const state = aiRateLimitState.get(userId) ?? { windowStartMs: now, count: 0 };
+    if (now - state.windowStartMs >= windowMs) {
+        state.windowStartMs = now;
+        state.count = 0;
+    }
+    if (state.count >= maxPerMinute) {
+        const retryAfterMs = Math.max(0, windowMs - (now - state.windowStartMs));
+        return { allowed: false, retryAfterMs };
+    }
+    state.count += 1;
+    aiRateLimitState.set(userId, state);
+    // occasional cleanup to avoid unbounded growth
+    aiRateLimitCleanupCounter++;
+    if (aiRateLimitCleanupCounter % 500 === 0 && aiRateLimitState.size > 2000) {
+        const cutoff = now - 5 * windowMs;
+        for (const [k, v] of aiRateLimitState.entries()) {
+            if (v.windowStartMs < cutoff)
+                aiRateLimitState.delete(k);
+        }
+    }
+    return { allowed: true, retryAfterMs: 0 };
+};
+const acquireAiConcurrency = (userId, plan) => {
+    const { maxConcurrent } = aiRateLimitsForPlan(plan);
+    const current = aiInFlightByUser.get(userId) ?? 0;
+    if (current >= maxConcurrent) {
+        const err = new Error('Too many concurrent AI requests. Please wait and try again.');
+        err.statusCode = 429;
+        throw err;
+    }
+    aiInFlightByUser.set(userId, current + 1);
+    return () => {
+        const c = aiInFlightByUser.get(userId) ?? 0;
+        const next = c - 1;
+        if (next <= 0)
+            aiInFlightByUser.delete(userId);
+        else
+            aiInFlightByUser.set(userId, next);
+    };
 };
 // AI response endpoint (protected)
 // Accepts a short transcript history and returns a single assistant reply.
@@ -600,11 +867,37 @@ app.post('/ai/respond', authenticate, async (req, res) => {
         const user = await getUserByIdFull(userId);
         const plan = normalizePlan(user?.plan);
         const ent = planEntitlements(plan);
+        const limits = promptLimitsForPlan(plan);
+        // Per-plan prompt length limits (real-time prompt + summary template prompt)
+        if (requestMode === 'reply') {
+            if (typeof providedSystemPrompt === 'string' && providedSystemPrompt.trim().length > 0) {
+                if (providedSystemPrompt.length > limits.realTimePromptMaxChars) {
+                    return res.status(400).json({
+                        error: `Real-time prompt is too long for your plan (max ${limits.realTimePromptMaxChars} chars).`,
+                    });
+                }
+            }
+        }
+        else if (requestMode === 'summary') {
+            if (typeof providedSystemPrompt === 'string' && providedSystemPrompt.trim().length > 0) {
+                if (providedSystemPrompt.length > limits.providedSystemPromptMaxChars) {
+                    return res.status(400).json({
+                        error: `Notes template prompt is too long for your plan (max ${limits.providedSystemPromptMaxChars} chars).`,
+                    });
+                }
+            }
+        }
         const modelText = typeof requestedModel === 'string' ? requestedModel.trim() : '';
         if (modelText.length > 80) {
             return res.status(400).json({ error: 'Model name too long' });
         }
-        const model = modelText.length > 0 ? modelText : (process.env.OPENAI_MODEL || 'gpt-4o-mini');
+        const { start: periodStart, end: periodEnd } = getCurrentBillingPeriodUtc();
+        const monthlyStats = await getUserApiUsageStats(userId, periodStart, periodEnd);
+        // Auto model selection: choose best allowed model for plan + mode, with cap-aware fallback.
+        let model = modelText.length > 0 ? modelText : (process.env.OPENAI_MODEL || 'gpt-4o-mini');
+        if (isAutoModelRequested(model) || model.trim().length === 0) {
+            model = pickAutoModel({ planTier: plan, ent, requestMode, stats: monthlyStats });
+        }
         if (!ent.allowedModels.includes(model)) {
             return res.status(403).json({ error: `Model not allowed for plan: ${ent.plan}` });
         }
@@ -612,34 +905,64 @@ app.post('/ai/respond', authenticate, async (req, res) => {
         if (!ent.canUseSummary && requestMode !== 'reply') {
             return res.status(403).json({ error: 'Upgrade required for summaries' });
         }
-        const maxTokens = requestMode === 'insights' ? 600 : requestMode === 'questions' ? 300 : 400;
-        const completion = await openai.chat.completions.create({
-            model,
-            messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: userPrompt },
-            ],
-            max_completion_tokens: maxTokens,
-            temperature: 0.2,
-            user: userId, // Track usage per user
-        });
-        const text = completion?.choices?.[0]?.message?.content ?? '';
-        // Capture and store usage
-        if (completion.usage) {
-            try {
-                const sessionId = req.body.sessionId;
-                await saveApiUsage(userId, model, {
-                    prompt_tokens: completion.usage.prompt_tokens,
-                    completion_tokens: completion.usage.completion_tokens,
-                    total_tokens: completion.usage.total_tokens,
-                }, requestMode, sessionId);
-            }
-            catch (usageError) {
-                // Log but don't fail the request if usage tracking fails
-                console.error('Failed to save API usage:', usageError);
-            }
+        // Rate limit (per user, per minute)
+        const rl = checkAndConsumeAiRateLimit(userId, plan);
+        if (!rl.allowed) {
+            return res.status(429).json({ error: 'Rate limit exceeded. Please wait and try again.' });
         }
-        return res.json({ text });
+        // Monthly AI token budget (Cursor-like quota)
+        try {
+            checkMonthlyAiBudgetsOrThrow(monthlyStats, ent, model);
+        }
+        catch (e) {
+            const status = typeof e?.statusCode === 'number' ? e.statusCode : 402;
+            return res.status(status).json({ error: e?.message ?? 'AI token limit reached' });
+        }
+        // Concurrency limit (per user)
+        let releaseConcurrency = null;
+        try {
+            releaseConcurrency = acquireAiConcurrency(userId, plan);
+        }
+        catch (e) {
+            const status = typeof e?.statusCode === 'number' ? e.statusCode : 429;
+            return res.status(status).json({ error: e?.message ?? 'Too many concurrent requests' });
+        }
+        const maxTokens = requestMode === 'insights' ? 600 : requestMode === 'questions' ? 300 : 400;
+        try {
+            const completion = await openai.chat.completions.create({
+                model,
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: userPrompt },
+                ],
+                max_completion_tokens: maxTokens,
+                temperature: 0.2,
+                user: userId, // Track usage per user
+            });
+            const text = completion?.choices?.[0]?.message?.content ?? '';
+            // Capture and store usage
+            if (completion.usage) {
+                try {
+                    const sessionId = req.body.sessionId;
+                    await saveApiUsage(userId, model, {
+                        prompt_tokens: completion.usage.prompt_tokens,
+                        completion_tokens: completion.usage.completion_tokens,
+                        total_tokens: completion.usage.total_tokens,
+                    }, requestMode, sessionId);
+                }
+                catch (usageError) {
+                    // Log but don't fail the request if usage tracking fails
+                    console.error('Failed to save API usage:', usageError);
+                }
+            }
+            return res.json({ text });
+        }
+        finally {
+            try {
+                releaseConcurrency?.();
+            }
+            catch (_) { }
+        }
     }
     catch (error) {
         console.error('AI respond error:', error);
@@ -1070,15 +1393,49 @@ aiWss.on('connection', (ws) => {
             if (modelText.length > 80) {
                 return send({ type: 'ai_error', requestId, status: 400, message: 'Model name too long' });
             }
-            const model = modelText.length > 0 ? modelText : (process.env.OPENAI_MODEL || 'gpt-4o-mini');
+            let model = modelText.length > 0 ? modelText : (process.env.OPENAI_MODEL || 'gpt-4o-mini');
             const maxTokens = requestMode === 'insights' ? 600 : requestMode === 'questions' ? 300 : 400;
             const authWs = ws;
             const userId = authWs.user?.userId ?? '';
-            // Enforce pricing tier entitlements (best-effort; defaults to free)
+            // Enforce pricing tier entitlements + quota/rate/concurrency
+            let planTier = 'free';
+            let ent = planEntitlements(planTier);
+            let monthlyStats = null;
             try {
                 const user = userId ? await getUserByIdFull(userId) : undefined;
-                const plan = normalizePlan(user?.plan);
-                const ent = planEntitlements(plan);
+                planTier = normalizePlan(user?.plan);
+                ent = planEntitlements(planTier);
+                const limits = promptLimitsForPlan(planTier);
+                // Per-plan prompt length limits (real-time prompt + summary template prompt)
+                if (requestMode === 'reply') {
+                    if (typeof providedSystemPrompt === 'string' && providedSystemPrompt.trim().length > 0) {
+                        if (providedSystemPrompt.length > limits.realTimePromptMaxChars) {
+                            return send({
+                                type: 'ai_error',
+                                requestId,
+                                status: 400,
+                                message: `Real-time prompt is too long for your plan (max ${limits.realTimePromptMaxChars} chars).`,
+                            });
+                        }
+                    }
+                }
+                else if (requestMode === 'summary') {
+                    if (typeof providedSystemPrompt === 'string' && providedSystemPrompt.trim().length > 0) {
+                        if (providedSystemPrompt.length > limits.providedSystemPromptMaxChars) {
+                            return send({
+                                type: 'ai_error',
+                                requestId,
+                                status: 400,
+                                message: `Notes template prompt is too long for your plan (max ${limits.providedSystemPromptMaxChars} chars).`,
+                            });
+                        }
+                    }
+                }
+                const { start: periodStart, end: periodEnd } = getCurrentBillingPeriodUtc();
+                monthlyStats = await getUserApiUsageStats(userId, periodStart, periodEnd);
+                if (isAutoModelRequested(model) || model.trim().length === 0) {
+                    model = pickAutoModel({ planTier, ent, requestMode, stats: monthlyStats });
+                }
                 if (!ent.allowedModels.includes(model)) {
                     return send({ type: 'ai_error', requestId, status: 403, message: `Model not allowed for plan: ${ent.plan}` });
                 }
@@ -1088,6 +1445,35 @@ aiWss.on('connection', (ws) => {
             }
             catch (_) {
                 // If billing lookup fails, default behavior continues (server-side OpenAI may still reject).
+            }
+            if (!userId) {
+                return send({ type: 'ai_error', requestId, status: 401, message: 'Unauthorized' });
+            }
+            // Rate limit (per user, per minute)
+            const rl = checkAndConsumeAiRateLimit(userId, planTier);
+            if (!rl.allowed) {
+                return send({ type: 'ai_error', requestId, status: 429, message: 'Rate limit exceeded. Please wait and try again.' });
+            }
+            // Monthly AI token budget (global + optional per-model)
+            try {
+                if (!monthlyStats) {
+                    const { start: periodStart, end: periodEnd } = getCurrentBillingPeriodUtc();
+                    monthlyStats = await getUserApiUsageStats(userId, periodStart, periodEnd);
+                }
+                checkMonthlyAiBudgetsOrThrow(monthlyStats, ent, model);
+            }
+            catch (e) {
+                const status = typeof e?.statusCode === 'number' ? e.statusCode : 402;
+                return send({ type: 'ai_error', requestId, status, message: e?.message ?? 'AI token limit reached' });
+            }
+            // Concurrency limit (per user)
+            let releaseConcurrency = null;
+            try {
+                releaseConcurrency = acquireAiConcurrency(userId, planTier);
+            }
+            catch (e) {
+                const status = typeof e?.statusCode === 'number' ? e.statusCode : 429;
+                return send({ type: 'ai_error', requestId, status, message: e?.message ?? 'Too many concurrent requests' });
             }
             send({ type: 'ai_start', requestId });
             let fullText = '';
@@ -1143,6 +1529,12 @@ aiWss.on('connection', (ws) => {
                 const status = typeof error?.status === 'number' ? error.status : 500;
                 const msg = error?.error?.message || error?.message || 'Failed to generate AI response';
                 return send({ type: 'ai_error', requestId, status, message: msg });
+            }
+            finally {
+                try {
+                    releaseConcurrency?.();
+                }
+                catch (_) { }
             }
         }
         catch (error) {

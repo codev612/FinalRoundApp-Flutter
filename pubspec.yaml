@@ -1,5 +1,5 @@
 name: hearnow
-description: "Cross-platform speech-to-text app using Deepgram Nova 3"
+description: "Cross-platform AI meeting assistant using Deepgram Nova 3 and OpenAI"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -40,7 +40,7 @@ dependencies:
   
   # Audio recording and permissions
   record: ^6.1.2
-  permission_handler: ^11.3.1
+  permission_handler: ^12.0.1
   
   # State management
   provider: ^6.1.2
@@ -53,7 +53,7 @@ dependencies:
   path: ^1.9.0
   
   # Window management for transparency and always-on-top
-  window_manager: ^0.3.8
+  window_manager: ^0.5.1
   
   # System tray support
   system_tray: ^2.0.3

@@ -58,7 +58,6 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
   BillingService? _billingService;
   BillingInfo? _billingInfo;
   String? _billingError;
-  DateTime? _recordingRunStartedAt;
   int? _recordingRunStartRemainingMs;
   bool _limitStopTriggered = false;
 
@@ -328,12 +327,12 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     final baseRemainingMs = info.remainingMinutes * 60 * 1000;
 
     if (speechProvider == null || !speechProvider.isRecording) return baseRemainingMs;
-    final startedAt = _recordingRunStartedAt;
     final startRemainingMs = _recordingRunStartRemainingMs;
-    if (startedAt == null || startRemainingMs == null) return baseRemainingMs;
+    if (startRemainingMs == null) return baseRemainingMs;
 
-    final elapsedMs = DateTime.now().difference(startedAt).inMilliseconds;
-    final remaining = startRemainingMs - elapsedMs;
+    // Decrease only when transcription activity is happening (not silence).
+    final usedMs = speechProvider.transcriptionUsageMsThisRun;
+    final remaining = startRemainingMs - usedMs;
     return remaining > 0 ? remaining : 0;
   }
 
@@ -346,18 +345,15 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
   }
 
   Future<void> _recordUsageForCurrentRunAndRefresh() async {
-    final startedAt = _recordingRunStartedAt;
-    _recordingRunStartedAt = null;
     _recordingRunStartRemainingMs = null;
     _limitStopTriggered = false;
 
-    if (startedAt == null) return;
-    final ms = DateTime.now().difference(startedAt).inMilliseconds;
-    if (ms <= 0) return;
+    final usedMs = _speechProvider?.transcriptionUsageMsThisRun ?? 0;
+    if (usedMs <= 0) return;
 
     try {
       await _billingService?.recordTranscriptionUsage(
-        durationMs: ms,
+        durationMs: usedMs,
         sessionId: _meetingProvider?.currentSession?.id,
       );
     } catch (_) {}
@@ -695,8 +691,11 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     required String text,
     required DateTime timestamp,
     DateTime? meetingStartTime,
+    bool showWhatShouldISayButton = false,
+    VoidCallback? onWhatShouldISayPressed,
   }) {
     final isMe = source == TranscriptSource.mic;
+    final isSystem = source == TranscriptSource.system;
     // Make bubbles more transparent - use black background with low opacity for better readability
     final backgroundColor = isMe 
         ? Colors.blue.shade600.withValues(alpha: 0.3) 
@@ -775,23 +774,53 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                     ],
                   ),
                 ),
-                const SizedBox(height: 4),
-                Align(
-                  alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-                  child: Text(
-                    timeDisplay,
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: textColor.withValues(alpha: 0.7),
-                      shadows: [
-                        Shadow(
-                          color: Colors.black.withValues(alpha: 0.9),
-                          blurRadius: 3,
-                          offset: const Offset(0, 1),
+                const SizedBox(height: 6),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Expanded(
+                      child: Align(
+                        alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                        child: Text(
+                          timeDisplay,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: textColor.withValues(alpha: 0.7),
+                            shadows: [
+                              Shadow(
+                                color: Colors.black.withValues(alpha: 0.9),
+                                blurRadius: 3,
+                                offset: const Offset(0, 1),
+                              ),
+                            ],
+                          ),
                         ),
-                      ],
+                      ),
                     ),
-                  ),
+                    if (showWhatShouldISayButton && isSystem) ...[
+                      const SizedBox(width: 8),
+                      Tooltip(
+                        message: 'What should I say?',
+                        child: IconButton(
+                          onPressed: onWhatShouldISayPressed,
+                          icon: const Icon(Icons.lightbulb_outline, size: 18),
+                          tooltip: 'What should I say',
+                          style: IconButton.styleFrom(
+                            foregroundColor: Colors.white,
+                            backgroundColor: Colors.black.withValues(alpha: 0.18),
+                            minimumSize: const Size(32, 32),
+                            padding: EdgeInsets.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(999),
+                              side: BorderSide(color: Colors.white.withValues(alpha: 0.18)),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
               ],
             ),
@@ -862,7 +891,8 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
 
       // If selected model is not allowed in this plan, snap to first allowed model.
       final allowed = info.allowedModels;
-      if (allowed.isNotEmpty && !allowed.contains(_selectedAiModel)) {
+      final selected = _selectedAiModel.trim();
+      if (allowed.isNotEmpty && selected.toLowerCase() != 'auto' && !allowed.contains(selected)) {
         await _setAiModel(allowed.first);
       }
     } catch (e) {
@@ -875,6 +905,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
 
   String _formatModelLabel(String model) {
     // Keep user-friendly display while preserving exact model value for API calls.
+    if (model.trim().toLowerCase() == 'auto') return 'AUTO';
     if (model.startsWith('gpt-')) {
       return model.replaceAll('-', ' ').toUpperCase();
     }
@@ -888,46 +919,12 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
         : <String>['gpt-5.2', 'gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'];
 
     final items = <PopupMenuEntry<String>>[];
+    items.add(const PopupMenuItem(value: 'auto', child: Text('AUTO')));
+    items.add(const PopupMenuDivider());
     for (final m in models) {
       items.add(PopupMenuItem(value: m, child: Text(_formatModelLabel(m))));
     }
-    items.add(const PopupMenuDivider());
-    items.add(const PopupMenuItem(value: '__custom__', child: Text('Custom…')));
     return items;
-  }
-
-  Future<void> _promptCustomModel() async {
-    final controller = TextEditingController(text: _selectedAiModel);
-    final result = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('OpenAI model'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: 'Model',
-            hintText: 'e.g. gpt-4o-mini',
-            border: OutlineInputBorder(),
-          ),
-          onSubmitted: (value) => Navigator.of(context).pop(value),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(controller.text),
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-    if (result == null) return;
-    final trimmed = result.trim();
-    if (trimmed.isEmpty) return;
-    await _setAiModel(trimmed);
   }
 
   Widget _buildModelMenuButton({required bool disabled, required ButtonStyle style}) {
@@ -940,10 +937,6 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
         enabled: !disabled,
         tooltip: 'Select model',
         onSelected: (value) async {
-          if (value == '__custom__') {
-            await _promptCustomModel();
-            return;
-          }
           await _setAiModel(value);
         },
         itemBuilder: (context) => _buildModelMenuItems(),
@@ -1183,6 +1176,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
       itemCount: bubbles.length,
       itemBuilder: (context, index) {
         final b = bubbles[index];
+        final canSuggestReply = b.source == TranscriptSource.system && !b.isDraft;
         // Calculate meeting start time: use first bubble's timestamp, or session createdAt, or recording start time
         DateTime? meetingStartTime;
         if (bubbles.isNotEmpty) {
@@ -1197,6 +1191,16 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
           text: b.text,
           timestamp: b.timestamp,
           meetingStartTime: meetingStartTime,
+          showWhatShouldISayButton: canSuggestReply,
+          onWhatShouldISayPressed: !canSuggestReply || speechProvider.isAiLoading
+              ? null
+              : () async {
+                  final raw = b.text.trim();
+                  final snippet = raw.length > 500 ? '${raw.substring(0, 500)}…' : raw;
+                  await _askAiWithPrompt(
+                    'What should I say in response to this?\n\nSYSTEM: $snippet',
+                  );
+                },
         );
       },
     );
@@ -1479,7 +1483,6 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                                     }
                                   } catch (_) {}
 
-                                  _recordingRunStartedAt = DateTime.now();
                                   _recordingRunStartRemainingMs = (_billingInfo?.remainingMinutes ?? 0) * 60 * 1000;
                                   _limitStopTriggered = false;
                                   speechProvider.startRecording(clearExisting: shouldClear, useMic: speechProvider.useMic);
@@ -1513,24 +1516,6 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                               icon: const Icon(Icons.save),
                               style: dockButtonStyle,
                             ),
-                            if (_billingInfo != null)
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                                decoration: BoxDecoration(
-                                  color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.7),
-                                  borderRadius: BorderRadius.circular(999),
-                                  border: Border.all(
-                                    color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
-                                  ),
-                                ),
-                                child: Text(
-                                  '${_billingInfo!.plan == 'pro_plus' ? 'PRO+' : _billingInfo!.plan.toUpperCase()} · ${_formatRemainingMs(_currentRemainingBillingMs(_speechProvider) ?? (_billingInfo!.remainingMinutes * 60 * 1000))} left',
-                                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                                        color: Theme.of(context).colorScheme.onSurface,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                ),
-                              ),
                           ],
                         ),
                       ),
@@ -2185,7 +2170,6 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                       }
                     } catch (_) {}
 
-                    _recordingRunStartedAt = DateTime.now();
                     _recordingRunStartRemainingMs = (_billingInfo?.remainingMinutes ?? 0) * 60 * 1000;
                     _limitStopTriggered = false;
                     speechProvider.startRecording(clearExisting: shouldClear, useMic: speechProvider.useMic);
@@ -2239,14 +2223,43 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                               Expanded(
                                 child: Padding(
                                   padding: const EdgeInsets.symmetric(vertical: 12.0, horizontal: 4.0),
-                                  child: Text(
-                                    session?.title ?? 'Untitled Session',
-                                    style: TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w500,
-                                      color: Theme.of(context).colorScheme.onSurface,
-                                    ),
-                                    overflow: TextOverflow.ellipsis,
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        child: Text(
+                                          session?.title ?? 'Untitled Session',
+                                          style: TextStyle(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.w500,
+                                            color: Theme.of(context).colorScheme.onSurface,
+                                          ),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                      if (_billingInfo != null) ...[
+                                        const SizedBox(width: 10),
+                                        Tooltip(
+                                          message: 'Transcription time remaining',
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                            decoration: BoxDecoration(
+                                              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                                              borderRadius: BorderRadius.circular(999),
+                                              border: Border.all(
+                                                color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
+                                              ),
+                                            ),
+                                            child: Text(
+                                              '${_formatRemainingMs(_currentRemainingBillingMs(speechProvider) ?? (_billingInfo!.remainingMinutes * 60 * 1000))} left',
+                                              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                                                    fontWeight: FontWeight.w600,
+                                                    color: Theme.of(context).colorScheme.onSurface,
+                                                  ),
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ],
                                   ),
                                 ),
                               ),

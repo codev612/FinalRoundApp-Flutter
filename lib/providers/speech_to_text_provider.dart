@@ -42,6 +42,12 @@ class SpeechToTextProvider extends ChangeNotifier {
   // Track when recording started to suppress mic initially (prevent early duplicates)
   DateTime? _recordingStartTime;
   static const _initialSuppressionWindow = Duration(seconds: 3); // Suppress mic for first 3 seconds when system audio is active
+
+  // Pricing: estimate "transcription used" time based on transcript activity,
+  // not wall-clock recording time. Long silence gaps won't consume minutes.
+  static const Duration _usageGapCap = Duration(seconds: 2);
+  int _transcriptionUsageMsThisRun = 0;
+  DateTime? _lastTranscriptUsageAt;
   
   bool _isRecording = false;
   bool _isConnected = false;
@@ -69,6 +75,23 @@ class SpeechToTextProvider extends ChangeNotifier {
   bool get isConnected => _isConnected;
   bool get isStopping => _isStopping;
   bool get useMic => _useMic;
+  int get transcriptionUsageMsThisRun => _transcriptionUsageMsThisRun;
+  void _trackTranscriptionUsageEvent() {
+    if (!_isRecording || _isStopping || _isDisposed) return;
+    final now = DateTime.now();
+    final prev = _lastTranscriptUsageAt;
+    if (prev == null) {
+      // Count a small minimum chunk for the first transcript event.
+      _transcriptionUsageMsThisRun += 1000;
+    } else {
+      final delta = now.difference(prev);
+      final capped = delta > _usageGapCap ? _usageGapCap : delta;
+      final ms = capped.inMilliseconds;
+      if (ms > 0) _transcriptionUsageMsThisRun += ms;
+    }
+    _lastTranscriptUsageAt = now;
+  }
+
   List<TranscriptBubble> get bubbles => List.unmodifiable(_bubbles);
   String get errorMessage => _errorMessage;
 
@@ -358,14 +381,15 @@ class SpeechToTextProvider extends ChangeNotifier {
         if (!_isRecording) {
           return;
         }
+
+        // Count "transcription used" time based on transcript activity.
+        _trackTranscriptionUsageEvent();
         
-        print('[SpeechToTextProvider] Received transcript - raw source: "${result.source}", text: "${result.text.substring(0, result.text.length > 50 ? 50 : result.text.length)}..."');
         final source = switch (result.source) {
           'mic' => TranscriptSource.mic,
           'system' => TranscriptSource.system,
           _ => TranscriptSource.unknown,
         };
-        print('[SpeechToTextProvider] Mapped to TranscriptSource: $source');
 
         // Track when system final transcript is received to suppress mic echo
         if (result.isFinal && source == TranscriptSource.system) {
@@ -374,7 +398,6 @@ class SpeechToTextProvider extends ChangeNotifier {
           _recentSystemTranscripts.add(now);
           // Clean up old entries
           _recentSystemTranscripts.removeWhere((time) => now.difference(time) > _systemActivityWindow);
-          print('[SpeechToTextProvider] System final transcript received, suppressing mic audio for ${_micSuppressionWindow.inMilliseconds}ms');
         }
         
         // Double-check recording state before processing
@@ -557,6 +580,10 @@ class SpeechToTextProvider extends ChangeNotifier {
       _systemAudioRecoveryTimer?.cancel();
       _systemAudioRecoveryTimer = null;
       _systemAudioRecoveryNotified = false;
+
+      // Reset per-run usage accounting (used for billing countdown)
+      _transcriptionUsageMsThisRun = 0;
+      _lastTranscriptUsageAt = null;
       
       // Reset suppression timestamps when starting recording
       _lastSystemFinalTime = null;
@@ -594,6 +621,9 @@ class SpeechToTextProvider extends ChangeNotifier {
             if (!_isRecording || _isStopping || _isDisposed) {
               return;
             }
+
+            // Count "transcription used" time based on transcript activity.
+            _trackTranscriptionUsageEvent();
             
             final source = switch (result.source) {
               'mic' => TranscriptSource.mic,
@@ -1122,6 +1152,7 @@ class SpeechToTextProvider extends ChangeNotifier {
       _lastSystemTranscriptTime = null;
       _recentSystemTranscripts.clear();
       _recordingStartTime = null;
+      _lastTranscriptUsageAt = null;
       
       // Notify listeners IMMEDIATELY so UI updates right away (button changes to resume/start)
       if (!_isDisposed) {
