@@ -241,23 +241,10 @@ app.put('/api/mode-configs/:modeName', authenticate, async (req, res) => {
         if (!modeName) {
             return res.status(400).json({ error: 'Missing mode name' });
         }
-        const user = await getUserByIdFull(userId);
-        const planTier = normalizePlan(user?.plan);
-        const limits = promptLimitsForPlan(planTier);
         const config = {
             realTimePrompt: typeof realTimePrompt === 'string' ? realTimePrompt : '',
             notesTemplate: typeof notesTemplate === 'string' ? notesTemplate : '',
         };
-        if (config.realTimePrompt.length > limits.realTimePromptMaxChars) {
-            return res.status(400).json({
-                error: `Real-time prompt is too long for your plan (max ${limits.realTimePromptMaxChars} chars).`,
-            });
-        }
-        if (config.notesTemplate.length > limits.notesTemplateMaxChars) {
-            return res.status(400).json({
-                error: `Notes template is too long for your plan (max ${limits.notesTemplateMaxChars} chars).`,
-            });
-        }
         await saveModeConfig(userId, modeName, config);
         return res.status(200).json({ mode: modeName, ...config });
     }
@@ -285,9 +272,6 @@ app.put('/api/custom-mode-configs', authenticate, async (req, res) => {
         if (!Array.isArray(body)) {
             return res.status(400).json({ error: 'Body must be an array of custom modes' });
         }
-        const user = await getUserByIdFull(userId);
-        const planTier = normalizePlan(user?.plan);
-        const limits = promptLimitsForPlan(planTier);
         const modes = body.map((m) => ({
             id: String(m?.id ?? ''),
             label: String(m?.label ?? ''),
@@ -295,18 +279,6 @@ app.put('/api/custom-mode-configs', authenticate, async (req, res) => {
             realTimePrompt: String(m?.realTimePrompt ?? ''),
             notesTemplate: String(m?.notesTemplate ?? ''),
         }));
-        for (const m of modes) {
-            if (m.realTimePrompt.length > limits.realTimePromptMaxChars) {
-                return res.status(400).json({
-                    error: `Custom mode "${m.label || m.id}" real-time prompt is too long for your plan (max ${limits.realTimePromptMaxChars} chars).`,
-                });
-            }
-            if (m.notesTemplate.length > limits.notesTemplateMaxChars) {
-                return res.status(400).json({
-                    error: `Custom mode "${m.label || m.id}" notes template is too long for your plan (max ${limits.notesTemplateMaxChars} chars).`,
-                });
-            }
-        }
         await saveCustomModes(userId, modes);
         return res.status(200).json(modes);
     }
@@ -589,31 +561,6 @@ const getCurrentBillingPeriodUtc = () => {
     const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0, 0));
     return { start, end };
 };
-const promptLimitsForPlan = (plan) => {
-    // Character-based limits (simple + predictable). This caps user-provided prompts/templates
-    // to prevent accidental huge prompts and to control cost.
-    switch (plan) {
-        case 'pro_plus':
-            return {
-                realTimePromptMaxChars: 8000,
-                notesTemplateMaxChars: 24000,
-                providedSystemPromptMaxChars: 24000, // summary: client-built prompt containing template + instructions
-            };
-        case 'pro':
-            return {
-                realTimePromptMaxChars: 3000,
-                notesTemplateMaxChars: 12000,
-                providedSystemPromptMaxChars: 12000,
-            };
-        case 'free':
-        default:
-            return {
-                realTimePromptMaxChars: 800,
-                notesTemplateMaxChars: 4000,
-                providedSystemPromptMaxChars: 4000,
-            };
-    }
-};
 const isAutoModelRequested = (m) => {
     return typeof m === 'string' && m.trim().toLowerCase() === 'auto';
 };
@@ -784,8 +731,8 @@ app.post('/ai/respond', authenticate, async (req, res) => {
             return res.status(400).json({ error: 'Missing turns[] or question' });
         }
         // Basic size limits to avoid accidental huge payloads.
-        if (turns.length > 50) {
-            return res.status(400).json({ error: 'Too many turns (max 50)' });
+        if (turns.length > 100) {
+            return res.status(400).json({ error: 'Too many turns (max 100)' });
         }
         const normalized = turns
             .map((t) => ({
@@ -867,26 +814,6 @@ app.post('/ai/respond', authenticate, async (req, res) => {
         const user = await getUserByIdFull(userId);
         const plan = normalizePlan(user?.plan);
         const ent = planEntitlements(plan);
-        const limits = promptLimitsForPlan(plan);
-        // Per-plan prompt length limits (real-time prompt + summary template prompt)
-        if (requestMode === 'reply') {
-            if (typeof providedSystemPrompt === 'string' && providedSystemPrompt.trim().length > 0) {
-                if (providedSystemPrompt.length > limits.realTimePromptMaxChars) {
-                    return res.status(400).json({
-                        error: `Real-time prompt is too long for your plan (max ${limits.realTimePromptMaxChars} chars).`,
-                    });
-                }
-            }
-        }
-        else if (requestMode === 'summary') {
-            if (typeof providedSystemPrompt === 'string' && providedSystemPrompt.trim().length > 0) {
-                if (providedSystemPrompt.length > limits.providedSystemPromptMaxChars) {
-                    return res.status(400).json({
-                        error: `Notes template prompt is too long for your plan (max ${limits.providedSystemPromptMaxChars} chars).`,
-                    });
-                }
-            }
-        }
         const modelText = typeof requestedModel === 'string' ? requestedModel.trim() : '';
         if (modelText.length > 80) {
             return res.status(400).json({ error: 'Model name too long' });
@@ -1303,8 +1230,8 @@ aiWss.on('connection', (ws) => {
             if (turns.length === 0 && questionText.length === 0) {
                 return send({ type: 'ai_error', requestId, status: 400, message: 'Missing turns[] or question' });
             }
-            if (turns.length > 50) {
-                return send({ type: 'ai_error', requestId, status: 400, message: 'Too many turns (max 50)' });
+            if (turns.length > 100) {
+                return send({ type: 'ai_error', requestId, status: 400, message: 'Too many turns (max 100)' });
             }
             const normalized = turns
                 .map((t) => ({
@@ -1405,32 +1332,6 @@ aiWss.on('connection', (ws) => {
                 const user = userId ? await getUserByIdFull(userId) : undefined;
                 planTier = normalizePlan(user?.plan);
                 ent = planEntitlements(planTier);
-                const limits = promptLimitsForPlan(planTier);
-                // Per-plan prompt length limits (real-time prompt + summary template prompt)
-                if (requestMode === 'reply') {
-                    if (typeof providedSystemPrompt === 'string' && providedSystemPrompt.trim().length > 0) {
-                        if (providedSystemPrompt.length > limits.realTimePromptMaxChars) {
-                            return send({
-                                type: 'ai_error',
-                                requestId,
-                                status: 400,
-                                message: `Real-time prompt is too long for your plan (max ${limits.realTimePromptMaxChars} chars).`,
-                            });
-                        }
-                    }
-                }
-                else if (requestMode === 'summary') {
-                    if (typeof providedSystemPrompt === 'string' && providedSystemPrompt.trim().length > 0) {
-                        if (providedSystemPrompt.length > limits.providedSystemPromptMaxChars) {
-                            return send({
-                                type: 'ai_error',
-                                requestId,
-                                status: 400,
-                                message: `Notes template prompt is too long for your plan (max ${limits.providedSystemPromptMaxChars} chars).`,
-                            });
-                        }
-                    }
-                }
                 const { start: periodStart, end: periodEnd } = getCurrentBillingPeriodUtc();
                 monthlyStats = await getUserApiUsageStats(userId, periodStart, periodEnd);
                 if (isAutoModelRequested(model) || model.trim().length === 0) {

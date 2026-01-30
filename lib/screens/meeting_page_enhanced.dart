@@ -693,6 +693,8 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     DateTime? meetingStartTime,
     bool showWhatShouldISayButton = false,
     VoidCallback? onWhatShouldISayPressed,
+    bool showCopyButton = false,
+    VoidCallback? onCopyPressed,
   }) {
     final isMe = source == TranscriptSource.mic;
     final isSystem = source == TranscriptSource.system;
@@ -798,27 +800,50 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                         ),
                       ),
                     ),
-                    if (showWhatShouldISayButton && isSystem) ...[
+                    if (isSystem && (showCopyButton || showWhatShouldISayButton)) ...[
                       const SizedBox(width: 8),
-                      Tooltip(
-                        message: 'What should I say?',
-                        child: IconButton(
-                          onPressed: onWhatShouldISayPressed,
-                          icon: const Icon(Icons.lightbulb_outline, size: 18),
-                          tooltip: 'What should I say',
-                          style: IconButton.styleFrom(
-                            foregroundColor: Colors.white,
-                            backgroundColor: Colors.black.withValues(alpha: 0.18),
-                            minimumSize: const Size(32, 32),
-                            padding: EdgeInsets.zero,
-                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(999),
-                              side: BorderSide(color: Colors.white.withValues(alpha: 0.18)),
+                      if (showCopyButton) ...[
+                        Tooltip(
+                          message: 'Copy text',
+                          child: IconButton(
+                            onPressed: onCopyPressed,
+                            icon: const Icon(Icons.content_copy, size: 16),
+                            tooltip: 'Copy',
+                            style: IconButton.styleFrom(
+                              foregroundColor: Colors.white,
+                              backgroundColor: Colors.black.withValues(alpha: 0.18),
+                              minimumSize: const Size(32, 32),
+                              padding: EdgeInsets.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(999),
+                                side: BorderSide(color: Colors.white.withValues(alpha: 0.18)),
+                              ),
                             ),
                           ),
                         ),
-                      ),
+                        const SizedBox(width: 6),
+                      ],
+                      if (showWhatShouldISayButton)
+                        Tooltip(
+                          message: 'What should I say?',
+                          child: IconButton(
+                            onPressed: onWhatShouldISayPressed,
+                            icon: const Icon(Icons.lightbulb_outline, size: 18),
+                            tooltip: 'What should I say',
+                            style: IconButton.styleFrom(
+                              foregroundColor: Colors.white,
+                              backgroundColor: Colors.black.withValues(alpha: 0.18),
+                              minimumSize: const Size(32, 32),
+                              padding: EdgeInsets.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(999),
+                                side: BorderSide(color: Colors.white.withValues(alpha: 0.18)),
+                              ),
+                            ),
+                          ),
+                        ),
                     ],
                   ],
                 ),
@@ -1176,7 +1201,10 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
       itemCount: bubbles.length,
       itemBuilder: (context, index) {
         final b = bubbles[index];
-        final canSuggestReply = b.source == TranscriptSource.system && !b.isDraft;
+        final isSystemBubble = b.source == TranscriptSource.system;
+        final hasText = b.text.trim().isNotEmpty;
+        final canSuggestReply = isSystemBubble && hasText;
+        final canCopy = isSystemBubble && hasText;
         // Calculate meeting start time: use first bubble's timestamp, or session createdAt, or recording start time
         DateTime? meetingStartTime;
         if (bubbles.isNotEmpty) {
@@ -1192,6 +1220,16 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
           timestamp: b.timestamp,
           meetingStartTime: meetingStartTime,
           showWhatShouldISayButton: canSuggestReply,
+          showCopyButton: canCopy,
+          onCopyPressed: !canCopy
+              ? null
+              : () async {
+                  await Clipboard.setData(ClipboardData(text: b.text));
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Copied')),
+                  );
+                },
           onWhatShouldISayPressed: !canSuggestReply || speechProvider.isAiLoading
               ? null
               : () async {
