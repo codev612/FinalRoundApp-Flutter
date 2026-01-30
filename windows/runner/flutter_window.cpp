@@ -1,10 +1,13 @@
 #include "flutter_window.h"
 
 #include <optional>
+#include <string>
+#include <vector>
 
 #include <flutter/encodable_value.h>
 #include <flutter/method_channel.h>
 #include <flutter/standard_method_codec.h>
+#include <windows.h>
 #include <winuser.h>
 
 #include "flutter/generated_plugin_registrant.h"
@@ -20,6 +23,354 @@
 
 // Global audio capture instance
 std::unique_ptr<AudioCapture> g_audio_capture;
+
+namespace {
+#ifndef PW_RENDERFULLCONTENT
+#define PW_RENDERFULLCONTENT 0x00000002
+#endif
+
+std::string WideToUtf8(const wchar_t* w) {
+  if (!w) return std::string();
+  const int needed = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+  if (needed <= 1) return std::string();
+  std::string out;
+  out.resize(static_cast<size_t>(needed));
+  WideCharToMultiByte(CP_UTF8, 0, w, -1, out.data(), needed, nullptr, nullptr);
+  // Drop null terminator
+  if (!out.empty() && out.back() == '\0') out.pop_back();
+  return out;
+}
+
+void ScaleToFit(int src_w, int src_h, int max_w, int max_h, int& out_w, int& out_h) {
+  if (src_w <= 0 || src_h <= 0) {
+    out_w = out_h = 0;
+    return;
+  }
+  if (max_w <= 0) max_w = src_w;
+  if (max_h <= 0) max_h = src_h;
+  double scale = 1.0;
+  if (src_w > max_w || src_h > max_h) {
+    const double sx = static_cast<double>(max_w) / static_cast<double>(src_w);
+    const double sy = static_cast<double>(max_h) / static_cast<double>(src_h);
+    scale = sx < sy ? sx : sy;
+  }
+  out_w = static_cast<int>(src_w * scale);
+  out_h = static_cast<int>(src_h * scale);
+  if (out_w < 1) out_w = 1;
+  if (out_h < 1) out_h = 1;
+}
+
+bool IsShareableTopLevelWindow(HWND hwnd, HWND self) {
+  if (!hwnd) return false;
+  if (self && (hwnd == self || IsChild(self, hwnd))) return false;
+  if (!IsWindowVisible(hwnd)) return false;
+  if (IsIconic(hwnd)) {
+    // still shareable; Google Meet shows minimized windows too
+  }
+  // Exclude owned windows/tool windows (not shown in Alt+Tab)
+  if (GetWindow(hwnd, GW_OWNER) != nullptr) return false;
+  const LONG ex = GetWindowLong(hwnd, GWL_EXSTYLE);
+  if (ex & WS_EX_TOOLWINDOW) return false;
+
+  wchar_t title[512];
+  title[0] = L'\0';
+  const int len = GetWindowTextW(hwnd, title, 512);
+  if (len <= 0) return false;
+  return true;
+}
+
+bool CaptureWindowBgra(HWND hwnd, std::vector<uint8_t>& out, int& width, int& height) {
+  RECT rc{};
+  if (!GetWindowRect(hwnd, &rc)) return false;
+  width = rc.right - rc.left;
+  height = rc.bottom - rc.top;
+  if (width <= 0 || height <= 0) return false;
+
+  HDC screen_dc = GetDC(nullptr);
+  if (!screen_dc) return false;
+  HDC mem_dc = CreateCompatibleDC(screen_dc);
+  if (!mem_dc) {
+    ReleaseDC(nullptr, screen_dc);
+    return false;
+  }
+
+  BITMAPINFO bmi{};
+  bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bmi.bmiHeader.biWidth = width;
+  bmi.bmiHeader.biHeight = -height;  // top-down
+  bmi.bmiHeader.biPlanes = 1;
+  bmi.bmiHeader.biBitCount = 32;
+  bmi.bmiHeader.biCompression = BI_RGB;
+
+  void* bits = nullptr;
+  HBITMAP dib = CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (!dib || !bits) {
+    if (dib) DeleteObject(dib);
+    DeleteDC(mem_dc);
+    ReleaseDC(nullptr, screen_dc);
+    return false;
+  }
+
+  HGDIOBJ old = SelectObject(mem_dc, dib);
+
+  // Prefer PrintWindow for correct content even if covered.
+  BOOL ok = PrintWindow(hwnd, mem_dc, PW_RENDERFULLCONTENT);
+  if (!ok) {
+    // Fallback: try BitBlt from window DC (may miss occluded content).
+    HDC win_dc = GetWindowDC(hwnd);
+    if (win_dc) {
+      ok = BitBlt(mem_dc, 0, 0, width, height, win_dc, 0, 0, SRCCOPY) ? TRUE : FALSE;
+      ReleaseDC(hwnd, win_dc);
+    }
+  }
+
+  if (!ok) {
+    SelectObject(mem_dc, old);
+    DeleteObject(dib);
+    DeleteDC(mem_dc);
+    ReleaseDC(nullptr, screen_dc);
+    return false;
+  }
+
+  const size_t size = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
+  out.resize(size);
+  memcpy(out.data(), bits, size);
+
+  SelectObject(mem_dc, old);
+  DeleteObject(dib);
+  DeleteDC(mem_dc);
+  ReleaseDC(nullptr, screen_dc);
+  return true;
+}
+
+bool CaptureWindowBgraScaled(HWND hwnd, int target_w, int target_h, std::vector<uint8_t>& out, int& width, int& height) {
+  RECT rc{};
+  if (!GetWindowRect(hwnd, &rc)) return false;
+  const int src_w = rc.right - rc.left;
+  const int src_h = rc.bottom - rc.top;
+  if (src_w <= 0 || src_h <= 0) return false;
+
+  width = target_w > 0 ? target_w : src_w;
+  height = target_h > 0 ? target_h : src_h;
+  if (width <= 0 || height <= 0) return false;
+
+  HDC screen_dc = GetDC(nullptr);
+  if (!screen_dc) return false;
+  HDC mem_full = CreateCompatibleDC(screen_dc);
+  HDC mem_thumb = CreateCompatibleDC(screen_dc);
+  if (!mem_full || !mem_thumb) {
+    if (mem_full) DeleteDC(mem_full);
+    if (mem_thumb) DeleteDC(mem_thumb);
+    ReleaseDC(nullptr, screen_dc);
+    return false;
+  }
+
+  // Full-size DIB (src_w x src_h)
+  BITMAPINFO bmi_full{};
+  bmi_full.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bmi_full.bmiHeader.biWidth = src_w;
+  bmi_full.bmiHeader.biHeight = -src_h;  // top-down
+  bmi_full.bmiHeader.biPlanes = 1;
+  bmi_full.bmiHeader.biBitCount = 32;
+  bmi_full.bmiHeader.biCompression = BI_RGB;
+
+  void* bits_full = nullptr;
+  HBITMAP dib_full = CreateDIBSection(screen_dc, &bmi_full, DIB_RGB_COLORS, &bits_full, nullptr, 0);
+  if (!dib_full || !bits_full) {
+    if (dib_full) DeleteObject(dib_full);
+    DeleteDC(mem_full);
+    DeleteDC(mem_thumb);
+    ReleaseDC(nullptr, screen_dc);
+    return false;
+  }
+
+  // Thumbnail DIB (width x height)
+  BITMAPINFO bmi_thumb{};
+  bmi_thumb.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bmi_thumb.bmiHeader.biWidth = width;
+  bmi_thumb.bmiHeader.biHeight = -height;  // top-down
+  bmi_thumb.bmiHeader.biPlanes = 1;
+  bmi_thumb.bmiHeader.biBitCount = 32;
+  bmi_thumb.bmiHeader.biCompression = BI_RGB;
+
+  void* bits_thumb = nullptr;
+  HBITMAP dib_thumb = CreateDIBSection(screen_dc, &bmi_thumb, DIB_RGB_COLORS, &bits_thumb, nullptr, 0);
+  if (!dib_thumb || !bits_thumb) {
+    if (dib_thumb) DeleteObject(dib_thumb);
+    DeleteObject(dib_full);
+    DeleteDC(mem_full);
+    DeleteDC(mem_thumb);
+    ReleaseDC(nullptr, screen_dc);
+    return false;
+  }
+
+  HGDIOBJ old_full = SelectObject(mem_full, dib_full);
+  HGDIOBJ old_thumb = SelectObject(mem_thumb, dib_thumb);
+
+  // Step 1: render full window (PrintWindow does NOT scale; it clips to DC size)
+  BOOL ok_full = PrintWindow(hwnd, mem_full, PW_RENDERFULLCONTENT);
+  if (!ok_full) {
+    HDC win_dc = GetWindowDC(hwnd);
+    if (win_dc) {
+      ok_full = BitBlt(mem_full, 0, 0, src_w, src_h, win_dc, 0, 0, SRCCOPY) ? TRUE : FALSE;
+      ReleaseDC(hwnd, win_dc);
+    }
+  }
+
+  if (!ok_full) {
+    SelectObject(mem_full, old_full);
+    SelectObject(mem_thumb, old_thumb);
+    DeleteObject(dib_full);
+    DeleteObject(dib_thumb);
+    DeleteDC(mem_full);
+    DeleteDC(mem_thumb);
+    ReleaseDC(nullptr, screen_dc);
+    return false;
+  }
+
+  // Step 2: scale down to thumbnail
+  SetStretchBltMode(mem_thumb, HALFTONE);
+  BOOL ok_thumb = StretchBlt(mem_thumb, 0, 0, width, height, mem_full, 0, 0, src_w, src_h, SRCCOPY) ? TRUE : FALSE;
+
+  if (!ok_thumb) {
+    SelectObject(mem_full, old_full);
+    SelectObject(mem_thumb, old_thumb);
+    DeleteObject(dib_full);
+    DeleteObject(dib_thumb);
+    DeleteDC(mem_full);
+    DeleteDC(mem_thumb);
+    ReleaseDC(nullptr, screen_dc);
+    return false;
+  }
+
+  const size_t size = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
+  out.resize(size);
+  memcpy(out.data(), bits_thumb, size);
+
+  SelectObject(mem_full, old_full);
+  SelectObject(mem_thumb, old_thumb);
+  DeleteObject(dib_full);
+  DeleteObject(dib_thumb);
+  DeleteDC(mem_full);
+  DeleteDC(mem_thumb);
+  ReleaseDC(nullptr, screen_dc);
+  return true;
+}
+
+bool CaptureRectBgra(int x, int y, int src_w, int src_h, std::vector<uint8_t>& out, int& width, int& height) {
+  width = src_w;
+  height = src_h;
+  if (width <= 0 || height <= 0) return false;
+
+  HDC screen_dc = GetDC(nullptr);
+  if (!screen_dc) return false;
+  HDC mem_dc = CreateCompatibleDC(screen_dc);
+  if (!mem_dc) {
+    ReleaseDC(nullptr, screen_dc);
+    return false;
+  }
+
+  BITMAPINFO bmi{};
+  bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bmi.bmiHeader.biWidth = width;
+  bmi.bmiHeader.biHeight = -height;  // top-down
+  bmi.bmiHeader.biPlanes = 1;
+  bmi.bmiHeader.biBitCount = 32;
+  bmi.bmiHeader.biCompression = BI_RGB;
+
+  void* bits = nullptr;
+  HBITMAP dib = CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (!dib || !bits) {
+    if (dib) DeleteObject(dib);
+    DeleteDC(mem_dc);
+    ReleaseDC(nullptr, screen_dc);
+    return false;
+  }
+
+  HGDIOBJ old = SelectObject(mem_dc, dib);
+  BOOL ok = BitBlt(mem_dc, 0, 0, width, height, screen_dc, x, y, SRCCOPY | CAPTUREBLT);
+  if (!ok) {
+    SelectObject(mem_dc, old);
+    DeleteObject(dib);
+    DeleteDC(mem_dc);
+    ReleaseDC(nullptr, screen_dc);
+    return false;
+  }
+
+  const size_t size = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
+  out.resize(size);
+  memcpy(out.data(), bits, size);
+
+  SelectObject(mem_dc, old);
+  DeleteObject(dib);
+  DeleteDC(mem_dc);
+  ReleaseDC(nullptr, screen_dc);
+  return true;
+}
+
+bool CaptureRectBgraScaled(int x, int y, int src_w, int src_h, int max_w, int max_h, std::vector<uint8_t>& out, int& width, int& height) {
+  int tw = 0, th = 0;
+  ScaleToFit(src_w, src_h, max_w, max_h, tw, th);
+  width = tw;
+  height = th;
+  if (width <= 0 || height <= 0) return false;
+
+  HDC screen_dc = GetDC(nullptr);
+  if (!screen_dc) return false;
+  HDC mem_dc = CreateCompatibleDC(screen_dc);
+  if (!mem_dc) {
+    ReleaseDC(nullptr, screen_dc);
+    return false;
+  }
+
+  BITMAPINFO bmi{};
+  bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bmi.bmiHeader.biWidth = width;
+  bmi.bmiHeader.biHeight = -height;  // top-down
+  bmi.bmiHeader.biPlanes = 1;
+  bmi.bmiHeader.biBitCount = 32;
+  bmi.bmiHeader.biCompression = BI_RGB;
+
+  void* bits = nullptr;
+  HBITMAP dib = CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (!dib || !bits) {
+    if (dib) DeleteObject(dib);
+    DeleteDC(mem_dc);
+    ReleaseDC(nullptr, screen_dc);
+    return false;
+  }
+
+  HGDIOBJ old = SelectObject(mem_dc, dib);
+  SetStretchBltMode(mem_dc, HALFTONE);
+  BOOL ok = StretchBlt(mem_dc, 0, 0, width, height, screen_dc, x, y, src_w, src_h, SRCCOPY | CAPTUREBLT) ? TRUE : FALSE;
+  if (!ok) {
+    SelectObject(mem_dc, old);
+    DeleteObject(dib);
+    DeleteDC(mem_dc);
+    ReleaseDC(nullptr, screen_dc);
+    return false;
+  }
+
+  const size_t size = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
+  out.resize(size);
+  memcpy(out.data(), bits, size);
+
+  SelectObject(mem_dc, old);
+  DeleteObject(dib);
+  DeleteDC(mem_dc);
+  ReleaseDC(nullptr, screen_dc);
+  return true;
+}
+
+bool CaptureScreenBgra(std::vector<uint8_t>& out, int& width, int& height) {
+  const int x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+  const int y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+  width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+  height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+  if (width <= 0 || height <= 0) return false;
+  return CaptureRectBgra(x, y, width, height, out, width, height);
+}
+}  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -138,6 +489,373 @@ bool FlutterWindow::OnCreate() {
           } else {
             result->Error("NO_WINDOW", "Window handle not available");
           }
+        } else if (call.method_name().compare("captureActiveWindowPixels") == 0) {
+          HWND self = GetHandle();
+          HWND fg = GetForegroundWindow();
+          bool minimized_self = false;
+
+          // If our app is foreground, minimize briefly so the real target becomes foreground.
+          if (self && (fg == self || IsChild(self, fg))) {
+            minimized_self = true;
+            ShowWindow(self, SW_MINIMIZE);
+            Sleep(120);
+            for (int i = 0; i < 10; i++) {
+              fg = GetForegroundWindow();
+              if (fg && fg != self && !IsChild(self, fg)) break;
+              Sleep(50);
+            }
+          }
+
+          if (!fg || (self && (fg == self || IsChild(self, fg)))) {
+            if (minimized_self && self) {
+              ShowWindow(self, SW_RESTORE);
+              SetForegroundWindow(self);
+            }
+            result->Error("NO_TARGET", "No active window to capture (focus another window and try again).");
+            return;
+          }
+
+          std::vector<uint8_t> bytes;
+          int w = 0, h = 0;
+          const bool ok = CaptureWindowBgra(fg, bytes, w, h);
+
+          if (minimized_self && self) {
+            ShowWindow(self, SW_RESTORE);
+            SetForegroundWindow(self);
+          }
+
+          if (!ok) {
+            result->Error("CAPTURE_FAILED", "Failed to capture active window.");
+            return;
+          }
+
+          flutter::EncodableMap map;
+          map[flutter::EncodableValue("width")] = flutter::EncodableValue(w);
+          map[flutter::EncodableValue("height")] = flutter::EncodableValue(h);
+          map[flutter::EncodableValue("bytes")] = flutter::EncodableValue(bytes);
+          result->Success(flutter::EncodableValue(map));
+        } else if (call.method_name().compare("listShareableWindows") == 0) {
+          HWND self = GetHandle();
+          flutter::EncodableList list;
+
+          struct Ctx {
+            HWND self;
+            flutter::EncodableList* out;
+          } ctx{self, &list};
+
+          EnumWindows(
+              [](HWND hwnd, LPARAM lparam) -> BOOL {
+                auto* c = reinterpret_cast<Ctx*>(lparam);
+                if (!IsShareableTopLevelWindow(hwnd, c->self)) return TRUE;
+
+                wchar_t title[512];
+                title[0] = L'\0';
+                GetWindowTextW(hwnd, title, 512);
+
+                flutter::EncodableMap m;
+                m[flutter::EncodableValue("hwnd")] =
+                    flutter::EncodableValue(static_cast<int64_t>(reinterpret_cast<intptr_t>(hwnd)));
+                m[flutter::EncodableValue("title")] =
+                    flutter::EncodableValue(WideToUtf8(title));
+                m[flutter::EncodableValue("isMinimized")] = flutter::EncodableValue(IsIconic(hwnd) ? true : false);
+
+                c->out->push_back(flutter::EncodableValue(m));
+                return TRUE;
+              },
+              reinterpret_cast<LPARAM>(&ctx));
+
+          result->Success(flutter::EncodableValue(list));
+        } else if (call.method_name().compare("captureWindowPixels") == 0) {
+          HWND self = GetHandle();
+          int64_t hwnd_val = 0;
+          if (call.arguments()) {
+            if (std::holds_alternative<int64_t>(*call.arguments())) {
+              hwnd_val = std::get<int64_t>(*call.arguments());
+            } else if (std::holds_alternative<int32_t>(*call.arguments())) {
+              hwnd_val = static_cast<int64_t>(std::get<int32_t>(*call.arguments()));
+            } else if (std::holds_alternative<flutter::EncodableMap>(*call.arguments())) {
+              const auto& args = std::get<flutter::EncodableMap>(*call.arguments());
+              auto it = args.find(flutter::EncodableValue("hwnd"));
+              if (it != args.end()) {
+                if (std::holds_alternative<int64_t>(it->second)) hwnd_val = std::get<int64_t>(it->second);
+                else if (std::holds_alternative<int32_t>(it->second)) hwnd_val = static_cast<int64_t>(std::get<int32_t>(it->second));
+              }
+            }
+          }
+          if (hwnd_val == 0) {
+            result->Error("BAD_ARGS", "Missing hwnd");
+            return;
+          }
+          HWND target = reinterpret_cast<HWND>(static_cast<intptr_t>(hwnd_val));
+          if (!IsWindow(target)) {
+            result->Error("NO_WINDOW", "Window no longer exists");
+            return;
+          }
+          if (self && (target == self || IsChild(self, target))) {
+            result->Error("BAD_TARGET", "Cannot capture this app window");
+            return;
+          }
+
+          std::vector<uint8_t> bytes;
+          int w = 0, h = 0;
+          const bool ok = CaptureWindowBgra(target, bytes, w, h);
+          if (!ok) {
+            result->Error("CAPTURE_FAILED", "Failed to capture window.");
+            return;
+          }
+          flutter::EncodableMap map;
+          map[flutter::EncodableValue("width")] = flutter::EncodableValue(w);
+          map[flutter::EncodableValue("height")] = flutter::EncodableValue(h);
+          map[flutter::EncodableValue("bytes")] = flutter::EncodableValue(bytes);
+          result->Success(flutter::EncodableValue(map));
+        } else if (call.method_name().compare("captureWindowThumbnailPixels") == 0) {
+          int64_t hwnd_val = 0;
+          int max_w = 320;
+          int max_h = 200;
+          if (call.arguments() && std::holds_alternative<flutter::EncodableMap>(*call.arguments())) {
+            const auto& args = std::get<flutter::EncodableMap>(*call.arguments());
+            auto it = args.find(flutter::EncodableValue("hwnd"));
+            if (it != args.end()) {
+              if (std::holds_alternative<int64_t>(it->second)) hwnd_val = std::get<int64_t>(it->second);
+              else if (std::holds_alternative<int32_t>(it->second)) hwnd_val = static_cast<int64_t>(std::get<int32_t>(it->second));
+            }
+            auto itw = args.find(flutter::EncodableValue("maxWidth"));
+            if (itw != args.end()) {
+              if (std::holds_alternative<int32_t>(itw->second)) max_w = std::get<int32_t>(itw->second);
+              else if (std::holds_alternative<int64_t>(itw->second)) max_w = static_cast<int>(std::get<int64_t>(itw->second));
+            }
+            auto ith = args.find(flutter::EncodableValue("maxHeight"));
+            if (ith != args.end()) {
+              if (std::holds_alternative<int32_t>(ith->second)) max_h = std::get<int32_t>(ith->second);
+              else if (std::holds_alternative<int64_t>(ith->second)) max_h = static_cast<int>(std::get<int64_t>(ith->second));
+            }
+          }
+          if (hwnd_val == 0) {
+            result->Error("BAD_ARGS", "Missing hwnd");
+            return;
+          }
+          HWND self = GetHandle();
+          HWND target = reinterpret_cast<HWND>(static_cast<intptr_t>(hwnd_val));
+          if (!IsWindow(target)) {
+            result->Error("NO_WINDOW", "Window no longer exists");
+            return;
+          }
+          if (self && (target == self || IsChild(self, target))) {
+            result->Error("BAD_TARGET", "Cannot capture this app window");
+            return;
+          }
+
+          RECT rc{};
+          if (!GetWindowRect(target, &rc)) {
+            result->Error("CAPTURE_FAILED", "Failed to get window rect.");
+            return;
+          }
+          const int src_w = rc.right - rc.left;
+          const int src_h = rc.bottom - rc.top;
+          int tw = 0, th = 0;
+          ScaleToFit(src_w, src_h, max_w, max_h, tw, th);
+
+          std::vector<uint8_t> bytes;
+          int w = 0, h = 0;
+          const bool ok = CaptureWindowBgraScaled(target, tw, th, bytes, w, h);
+          if (!ok) {
+            result->Error("CAPTURE_FAILED", "Failed to capture window thumbnail.");
+            return;
+          }
+          flutter::EncodableMap map;
+          map[flutter::EncodableValue("width")] = flutter::EncodableValue(w);
+          map[flutter::EncodableValue("height")] = flutter::EncodableValue(h);
+          map[flutter::EncodableValue("bytes")] = flutter::EncodableValue(bytes);
+          result->Success(flutter::EncodableValue(map));
+        } else if (call.method_name().compare("captureScreenPixels") == 0) {
+          HWND self = GetHandle();
+          bool minimized_self = false;
+
+          // If our app is foreground, minimize briefly so it doesn't appear in the capture.
+          HWND fg = GetForegroundWindow();
+          if (self && (fg == self || IsChild(self, fg))) {
+            minimized_self = true;
+            ShowWindow(self, SW_MINIMIZE);
+            Sleep(120);
+          }
+
+          std::vector<uint8_t> bytes;
+          int w = 0, h = 0;
+          const bool ok = CaptureScreenBgra(bytes, w, h);
+
+          if (minimized_self && self) {
+            ShowWindow(self, SW_RESTORE);
+            SetForegroundWindow(self);
+          }
+
+          if (!ok) {
+            result->Error("CAPTURE_FAILED", "Failed to capture screen.");
+            return;
+          }
+
+          flutter::EncodableMap map;
+          map[flutter::EncodableValue("width")] = flutter::EncodableValue(w);
+          map[flutter::EncodableValue("height")] = flutter::EncodableValue(h);
+          map[flutter::EncodableValue("bytes")] = flutter::EncodableValue(bytes);
+          result->Success(flutter::EncodableValue(map));
+        } else if (call.method_name().compare("captureScreenThumbnailPixels") == 0) {
+          int max_w = 320;
+          int max_h = 200;
+          if (call.arguments() && std::holds_alternative<flutter::EncodableMap>(*call.arguments())) {
+            const auto& args = std::get<flutter::EncodableMap>(*call.arguments());
+            auto itw = args.find(flutter::EncodableValue("maxWidth"));
+            if (itw != args.end()) {
+              if (std::holds_alternative<int32_t>(itw->second)) max_w = std::get<int32_t>(itw->second);
+              else if (std::holds_alternative<int64_t>(itw->second)) max_w = static_cast<int>(std::get<int64_t>(itw->second));
+            }
+            auto ith = args.find(flutter::EncodableValue("maxHeight"));
+            if (ith != args.end()) {
+              if (std::holds_alternative<int32_t>(ith->second)) max_h = std::get<int32_t>(ith->second);
+              else if (std::holds_alternative<int64_t>(ith->second)) max_h = static_cast<int>(std::get<int64_t>(ith->second));
+            }
+          }
+
+          const int x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+          const int y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+          const int sw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+          const int sh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+          if (sw <= 0 || sh <= 0) {
+            result->Error("CAPTURE_FAILED", "Invalid virtual screen metrics.");
+            return;
+          }
+
+          std::vector<uint8_t> bytes;
+          int w = 0, h = 0;
+          const bool ok = CaptureRectBgraScaled(x, y, sw, sh, max_w, max_h, bytes, w, h);
+          if (!ok) {
+            result->Error("CAPTURE_FAILED", "Failed to capture screen thumbnail.");
+            return;
+          }
+          flutter::EncodableMap map;
+          map[flutter::EncodableValue("width")] = flutter::EncodableValue(w);
+          map[flutter::EncodableValue("height")] = flutter::EncodableValue(h);
+          map[flutter::EncodableValue("bytes")] = flutter::EncodableValue(bytes);
+          result->Success(flutter::EncodableValue(map));
+        } else if (call.method_name().compare("listMonitors") == 0) {
+          flutter::EncodableList list;
+          struct MonCtx {
+            int index;
+            flutter::EncodableList* out;
+          } ctx{0, &list};
+          EnumDisplayMonitors(
+              nullptr,
+              nullptr,
+              [](HMONITOR hmon, HDC, LPRECT, LPARAM lparam) -> BOOL {
+                auto* ctx = reinterpret_cast<MonCtx*>(lparam);
+                MONITORINFOEXW mi{};
+                mi.cbSize = sizeof(mi);
+                if (!GetMonitorInfoW(hmon, &mi)) return TRUE;
+
+                const RECT r = mi.rcMonitor;
+                const int w = r.right - r.left;
+                const int h = r.bottom - r.top;
+                if (w <= 0 || h <= 0) return TRUE;
+
+                ctx->index += 1;
+                const bool primary = (mi.dwFlags & MONITORINFOF_PRIMARY) != 0;
+
+                flutter::EncodableMap m;
+                m[flutter::EncodableValue("id")] =
+                    flutter::EncodableValue(static_cast<int64_t>(reinterpret_cast<intptr_t>(hmon)));
+                m[flutter::EncodableValue("index")] = flutter::EncodableValue(ctx->index);
+                m[flutter::EncodableValue("width")] = flutter::EncodableValue(w);
+                m[flutter::EncodableValue("height")] = flutter::EncodableValue(h);
+                m[flutter::EncodableValue("isPrimary")] = flutter::EncodableValue(primary);
+                m[flutter::EncodableValue("device")] = flutter::EncodableValue(WideToUtf8(mi.szDevice));
+                ctx->out->push_back(flutter::EncodableValue(m));
+                return TRUE;
+              },
+              reinterpret_cast<LPARAM>(&ctx));
+          result->Success(flutter::EncodableValue(list));
+        } else if (call.method_name().compare("captureMonitorPixels") == 0) {
+          int64_t id = 0;
+          if (call.arguments() && std::holds_alternative<flutter::EncodableMap>(*call.arguments())) {
+            const auto& args = std::get<flutter::EncodableMap>(*call.arguments());
+            auto it = args.find(flutter::EncodableValue("monitorId"));
+            if (it != args.end()) {
+              if (std::holds_alternative<int64_t>(it->second)) id = std::get<int64_t>(it->second);
+              else if (std::holds_alternative<int32_t>(it->second)) id = static_cast<int64_t>(std::get<int32_t>(it->second));
+            }
+          }
+          if (id == 0) {
+            result->Error("BAD_ARGS", "Missing monitorId");
+            return;
+          }
+          HMONITOR target = reinterpret_cast<HMONITOR>(static_cast<intptr_t>(id));
+          MONITORINFO mi{};
+          mi.cbSize = sizeof(mi);
+          if (!GetMonitorInfoW(target, &mi)) {
+            result->Error("NO_MONITOR", "Monitor not found");
+            return;
+          }
+          const RECT r = mi.rcMonitor;
+          const int sw = r.right - r.left;
+          const int sh = r.bottom - r.top;
+          std::vector<uint8_t> bytes;
+          int w = 0, h = 0;
+          const bool ok = CaptureRectBgra(r.left, r.top, sw, sh, bytes, w, h);
+          if (!ok) {
+            result->Error("CAPTURE_FAILED", "Failed to capture monitor.");
+            return;
+          }
+          flutter::EncodableMap map;
+          map[flutter::EncodableValue("width")] = flutter::EncodableValue(w);
+          map[flutter::EncodableValue("height")] = flutter::EncodableValue(h);
+          map[flutter::EncodableValue("bytes")] = flutter::EncodableValue(bytes);
+          result->Success(flutter::EncodableValue(map));
+        } else if (call.method_name().compare("captureMonitorThumbnailPixels") == 0) {
+          int64_t id = 0;
+          int max_w = 320;
+          int max_h = 200;
+          if (call.arguments() && std::holds_alternative<flutter::EncodableMap>(*call.arguments())) {
+            const auto& args = std::get<flutter::EncodableMap>(*call.arguments());
+            auto it = args.find(flutter::EncodableValue("monitorId"));
+            if (it != args.end()) {
+              if (std::holds_alternative<int64_t>(it->second)) id = std::get<int64_t>(it->second);
+              else if (std::holds_alternative<int32_t>(it->second)) id = static_cast<int64_t>(std::get<int32_t>(it->second));
+            }
+            auto itw = args.find(flutter::EncodableValue("maxWidth"));
+            if (itw != args.end()) {
+              if (std::holds_alternative<int32_t>(itw->second)) max_w = std::get<int32_t>(itw->second);
+              else if (std::holds_alternative<int64_t>(itw->second)) max_w = static_cast<int>(std::get<int64_t>(itw->second));
+            }
+            auto ith = args.find(flutter::EncodableValue("maxHeight"));
+            if (ith != args.end()) {
+              if (std::holds_alternative<int32_t>(ith->second)) max_h = std::get<int32_t>(ith->second);
+              else if (std::holds_alternative<int64_t>(ith->second)) max_h = static_cast<int>(std::get<int64_t>(ith->second));
+            }
+          }
+          if (id == 0) {
+            result->Error("BAD_ARGS", "Missing monitorId");
+            return;
+          }
+          HMONITOR target = reinterpret_cast<HMONITOR>(static_cast<intptr_t>(id));
+          MONITORINFO mi{};
+          mi.cbSize = sizeof(mi);
+          if (!GetMonitorInfoW(target, &mi)) {
+            result->Error("NO_MONITOR", "Monitor not found");
+            return;
+          }
+          const RECT r = mi.rcMonitor;
+          const int sw = r.right - r.left;
+          const int sh = r.bottom - r.top;
+          std::vector<uint8_t> bytes;
+          int w = 0, h = 0;
+          const bool ok = CaptureRectBgraScaled(r.left, r.top, sw, sh, max_w, max_h, bytes, w, h);
+          if (!ok) {
+            result->Error("CAPTURE_FAILED", "Failed to capture monitor thumbnail.");
+            return;
+          }
+          flutter::EncodableMap map;
+          map[flutter::EncodableValue("width")] = flutter::EncodableValue(w);
+          map[flutter::EncodableValue("height")] = flutter::EncodableValue(h);
+          map[flutter::EncodableValue("bytes")] = flutter::EncodableValue(bytes);
+          result->Success(flutter::EncodableValue(map));
         } else {
           result->NotImplemented();
         }

@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'dart:async';
 import 'dart:io' show Platform;
+import 'dart:typed_data';
 import '../services/transcription_service.dart';
 import '../services/audio_capture_service.dart';
 import '../services/windows_audio_service.dart';
@@ -486,7 +487,7 @@ class SpeechToTextProvider extends ChangeNotifier {
     return null;
   }
 
-  Future<void> askAi({String? question, String? systemPrompt, String? model}) async {
+  Future<void> askAi({String? question, String? systemPrompt, String? model, Uint8List? imagePngBytes}) async {
     final ai = _aiService;
     if (ai == null) {
       _aiErrorMessage = 'AI service not initialized';
@@ -497,16 +498,28 @@ class SpeechToTextProvider extends ChangeNotifier {
 
     final trimmedQuestion = question?.trim() ?? '';
     final turns = _buildAiTurns();
+    final hasImage = imagePngBytes != null && imagePngBytes.isNotEmpty;
     
     // If no custom question provided, try to use the last mic turn as question
-    final finalQuestion = trimmedQuestion.isNotEmpty ? trimmedQuestion : _defaultQuestionFromLastMicTurn();
+    String? finalQuestion = trimmedQuestion.isNotEmpty ? trimmedQuestion : _defaultQuestionFromLastMicTurn();
+
+    // If user wants to ask with a screenshot but there is no mic question yet,
+    // provide a sensible default question.
+    if (finalQuestion == null && hasImage) {
+      finalQuestion = 'Analyze the attached screenshot and the conversation so far. Tell me what I should say next. Be concise.';
+    }
     
     // Require transcript only if no question is provided (neither custom nor from transcript)
-    if (turns.isEmpty && finalQuestion == null) {
+    if (turns.isEmpty && finalQuestion == null && !hasImage) {
       _aiErrorMessage = 'No transcript yet';
       notifyListeners();
       return;
     }
+
+    // If a screenshot is attached, explicitly tell the model to use it as context.
+    final questionToSend = (hasImage && finalQuestion != null && finalQuestion.trim().isNotEmpty)
+        ? 'Screenshot attached.\n\n$finalQuestion'
+        : finalQuestion;
 
     _isAiLoading = true;
     _aiErrorMessage = '';
@@ -514,11 +527,12 @@ class SpeechToTextProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
+      // For image requests, prefer HTTP (payload can be large).
       // If AI WS is configured, stream token deltas for a more responsive UI.
-      if (ai.aiWsUrl != null) {
+      if (ai.aiWsUrl != null && !hasImage) {
         await for (final delta in ai.streamRespond(
           turns: turns,
-          question: finalQuestion,
+          question: questionToSend,
           mode: 'reply',
           systemPrompt: systemPrompt,
           model: model,
@@ -529,10 +543,11 @@ class SpeechToTextProvider extends ChangeNotifier {
       } else {
         final text = await ai.respond(
           turns: turns,
-          question: finalQuestion,
+          question: questionToSend,
           mode: 'reply',
           systemPrompt: systemPrompt,
           model: model,
+          imagePngBytes: imagePngBytes,
         );
         _aiResponse = text;
       }

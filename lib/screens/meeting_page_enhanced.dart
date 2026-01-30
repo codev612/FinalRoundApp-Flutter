@@ -3,6 +3,9 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
+import 'dart:io' show Platform;
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 import '../config/app_config.dart';
 import '../providers/speech_to_text_provider.dart';
 import '../providers/meeting_provider.dart';
@@ -25,10 +28,87 @@ class MeetingPageEnhanced extends StatefulWidget {
   State<MeetingPageEnhanced> createState() => _MeetingPageEnhancedState();
 }
 
+enum ScreenCaptureTarget {
+  window,
+  screen,
+}
+
+class _ShareableWindowInfo {
+  final int hwnd;
+  final String title;
+  final bool isMinimized;
+
+  const _ShareableWindowInfo({required this.hwnd, required this.title, required this.isMinimized});
+
+  static _ShareableWindowInfo? tryParse(dynamic v) {
+    if (v is! Map) return null;
+    final hwnd = (v['hwnd'] as num?)?.toInt();
+    final title = v['title']?.toString();
+    final isMinimized = v['isMinimized'] == true;
+    if (hwnd == null || hwnd <= 0) return null;
+    if (title == null || title.trim().isEmpty) return null;
+    return _ShareableWindowInfo(hwnd: hwnd, title: title.trim(), isMinimized: isMinimized);
+  }
+}
+
+class _MonitorInfo {
+  final int id;
+  final int index;
+  final int width;
+  final int height;
+  final bool isPrimary;
+  final String device;
+
+  const _MonitorInfo({
+    required this.id,
+    required this.index,
+    required this.width,
+    required this.height,
+    required this.isPrimary,
+    required this.device,
+  });
+
+  String get label {
+    final base = 'Screen $index';
+    return isPrimary ? '$base (Primary)' : base;
+  }
+
+  static _MonitorInfo? tryParse(dynamic v) {
+    if (v is! Map) return null;
+    final id = (v['id'] as num?)?.toInt();
+    final index = (v['index'] as num?)?.toInt() ?? 0;
+    final width = (v['width'] as num?)?.toInt() ?? 0;
+    final height = (v['height'] as num?)?.toInt() ?? 0;
+    final isPrimary = v['isPrimary'] == true;
+    final device = v['device']?.toString() ?? '';
+    if (id == null || id == 0) return null;
+    if (index <= 0) return null;
+    return _MonitorInfo(
+      id: id,
+      index: index,
+      width: width,
+      height: height,
+      isPrimary: isPrimary,
+      device: device,
+    );
+  }
+}
+
+class _ScreenCaptureChoice {
+  final ScreenCaptureTarget target;
+  final _ShareableWindowInfo? window;
+  final int? monitorId;
+  final String? monitorLabel;
+  const _ScreenCaptureChoice._(this.target, this.window, this.monitorId, this.monitorLabel);
+  _ScreenCaptureChoice.screenMonitor(_MonitorInfo m) : this._(ScreenCaptureTarget.screen, null, m.id, m.label);
+  const _ScreenCaptureChoice.window(_ShareableWindowInfo w) : this._(ScreenCaptureTarget.window, w, null, null);
+}
+
 class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
   final ScrollController _transcriptScrollController = ScrollController();
   final TextEditingController _askAiController = TextEditingController();
   final TextEditingController _aiResponseController = TextEditingController();
+  static const MethodChannel _windowChannel = MethodChannel('com.hearnow/window');
   int _lastBubbleCount = 0;
   String _lastTailSignature = '';
   String _suggestedQuestions = '';
@@ -42,6 +122,13 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
   DateTime? _recordingStartedAt;
   bool _showMarkers = true;
   bool _autoAsk = false;
+  bool _autoAskUseScreen = false;
+  bool _screenCaptureInFlight = false;
+  ScreenCaptureTarget _screenCaptureTarget = ScreenCaptureTarget.window;
+  int? _screenCaptureWindowHwnd;
+  String? _screenCaptureWindowTitle;
+  int? _screenCaptureMonitorId; // null = all screens
+  String? _screenCaptureMonitorLabel;
   bool _showConversationControls = true;
   bool _showAiControls = true;
   bool _showConversationPanel = true;
@@ -53,6 +140,10 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
   MeetingQuestionService? _questionService;
 
   static const String _aiModelPrefKey = 'openai_model';
+  static const String _autoAskUseScreenPrefKey = 'auto_ask_use_screen';
+  static const String _screenCaptureTargetPrefKey = 'screen_capture_target';
+  static const String _screenCaptureMonitorIdPrefKey = 'screen_capture_monitor_id';
+  static const String _screenCaptureMonitorLabelPrefKey = 'screen_capture_monitor_label';
   String _selectedAiModel = 'gpt-4.1-mini';
 
   BillingService? _billingService;
@@ -60,6 +151,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
   String? _billingError;
   int? _recordingRunStartRemainingMs;
   bool _limitStopTriggered = false;
+  String _lastAiErrorShown = '';
 
   @override
   void initState() {
@@ -78,6 +170,9 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
       _meetingProvider = context.read<MeetingProvider>();
 
       await _loadAiModel();
+      await _loadAutoAskUseScreen();
+      await _loadScreenCaptureTarget();
+      await _loadScreenCaptureMonitorSelection();
       
       final authToken = authProvider.token;
       _billingService = BillingService()..setAuthToken(authToken);
@@ -195,6 +290,157 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     } catch (e) {
       debugPrint('Error in _syncBubblesToSession: $e');
       // Don't rethrow - just log to prevent crashes
+    }
+  }
+
+  Future<void> _loadScreenCaptureTarget() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getString(_screenCaptureTargetPrefKey);
+      ScreenCaptureTarget next = ScreenCaptureTarget.window;
+      if (saved == 'screen') next = ScreenCaptureTarget.screen;
+      if (!mounted) {
+        _screenCaptureTarget = next;
+        return;
+      }
+      setState(() => _screenCaptureTarget = next);
+    } catch (_) {
+      // Ignore preference failures.
+    }
+  }
+
+  Future<void> _setScreenCaptureTarget(ScreenCaptureTarget target) async {
+    if (!mounted) {
+      _screenCaptureTarget = target;
+    } else {
+      setState(() => _screenCaptureTarget = target);
+    }
+    if (target == ScreenCaptureTarget.screen) {
+      // Window handle is only meaningful for window capture.
+      _screenCaptureWindowHwnd = null;
+      _screenCaptureWindowTitle = null;
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_screenCaptureTargetPrefKey, target == ScreenCaptureTarget.screen ? 'screen' : 'window');
+    } catch (_) {
+      // Ignore preference failures.
+    }
+  }
+
+  Future<void> _loadScreenCaptureMonitorSelection() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final idText = prefs.getString(_screenCaptureMonitorIdPrefKey);
+      final label = prefs.getString(_screenCaptureMonitorLabelPrefKey);
+      final parsed = idText == null || idText.trim().isEmpty ? null : int.tryParse(idText.trim());
+      if (!mounted) {
+        _screenCaptureMonitorId = parsed;
+        _screenCaptureMonitorLabel = label;
+        return;
+      }
+      setState(() {
+        _screenCaptureMonitorId = parsed;
+        _screenCaptureMonitorLabel = label;
+      });
+    } catch (_) {
+      // Ignore preference failures.
+    }
+  }
+
+  Future<void> _setScreenCaptureMonitorSelection({required int? monitorId, required String? monitorLabel}) async {
+    if (!mounted) {
+      _screenCaptureMonitorId = monitorId;
+      _screenCaptureMonitorLabel = monitorLabel;
+    } else {
+      setState(() {
+        _screenCaptureMonitorId = monitorId;
+        _screenCaptureMonitorLabel = monitorLabel;
+      });
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_screenCaptureMonitorIdPrefKey, monitorId == null ? '' : monitorId.toString());
+      await prefs.setString(_screenCaptureMonitorLabelPrefKey, (monitorLabel ?? '').trim());
+    } catch (_) {
+      // Ignore preference failures.
+    }
+  }
+
+  Future<List<_MonitorInfo>> _listMonitors() async {
+    final raw = await _windowChannel.invokeMethod<dynamic>('listMonitors');
+    if (raw is! List) return const [];
+    return raw.map(_MonitorInfo.tryParse).whereType<_MonitorInfo>().toList(growable: false);
+  }
+
+  Future<List<_ShareableWindowInfo>> _listShareableWindows() async {
+    final raw = await _windowChannel.invokeMethod<dynamic>('listShareableWindows');
+    if (raw is! List) return const [];
+    final windows = raw.map(_ShareableWindowInfo.tryParse).whereType<_ShareableWindowInfo>().toList(growable: false);
+    return windows;
+  }
+
+  Future<void> _showScreenCapturePicker() async {
+    if (!Platform.isWindows) return;
+    final choice = await showDialog<_ScreenCaptureChoice>(
+      context: context,
+      barrierDismissible: true,
+      builder: (context) {
+        return _ScreenCapturePickerDialog(
+          initialTarget: _screenCaptureTarget,
+          initialWindowHwnd: _screenCaptureWindowHwnd,
+          initialMonitorId: _screenCaptureMonitorId,
+          loadMonitors: _listMonitors,
+          loadWindows: _listShareableWindows,
+        );
+      },
+    );
+    if (!mounted || choice == null) return;
+
+    if (choice.target == ScreenCaptureTarget.screen) {
+      await _setScreenCaptureTarget(ScreenCaptureTarget.screen);
+      await _setScreenCaptureMonitorSelection(
+        monitorId: choice.monitorId,
+        monitorLabel: choice.monitorLabel,
+      );
+      return;
+    }
+
+    final w = choice.window;
+    if (w == null) return;
+    await _setScreenCaptureTarget(ScreenCaptureTarget.window);
+    setState(() {
+      _screenCaptureWindowHwnd = w.hwnd;
+      _screenCaptureWindowTitle = w.title;
+    });
+  }
+
+  Future<void> _loadAutoAskUseScreen() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getBool(_autoAskUseScreenPrefKey);
+      if (saved == null) return;
+      if (!mounted) {
+        _autoAskUseScreen = saved;
+        return;
+      }
+      setState(() => _autoAskUseScreen = saved);
+    } catch (_) {
+      // Ignore preference failures.
+    }
+  }
+
+  Future<void> _setAutoAskUseScreen(bool value) async {
+    if (!mounted) {
+      _autoAskUseScreen = value;
+    } else {
+      setState(() => _autoAskUseScreen = value);
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_autoAskUseScreenPrefKey, value);
+    } catch (_) {
+      // Ignore preference failures.
     }
   }
 
@@ -937,6 +1183,8 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     return model;
   }
 
+  static const double _modelMenuItemHeight = 36.0;
+
   List<PopupMenuEntry<String>> _buildModelMenuItems() {
     final allowed = _billingInfo?.allowedModels;
     final models = (allowed != null && allowed.isNotEmpty)
@@ -944,10 +1192,34 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
         : <String>['gpt-5.2', 'gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'];
 
     final items = <PopupMenuEntry<String>>[];
-    items.add(const PopupMenuItem(value: 'auto', child: Text('AUTO')));
+    items.add(
+      PopupMenuItem(
+        value: 'auto',
+        height: _modelMenuItemHeight,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: Text(
+          'AUTO',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontSize: 13),
+        ),
+      ),
+    );
     items.add(const PopupMenuDivider());
     for (final m in models) {
-      items.add(PopupMenuItem(value: m, child: Text(_formatModelLabel(m))));
+      items.add(
+        PopupMenuItem(
+          value: m,
+          height: _modelMenuItemHeight,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Text(
+            _formatModelLabel(m),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontSize: 13),
+          ),
+        ),
+      );
     }
     return items;
   }
@@ -966,11 +1238,11 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
         },
         itemBuilder: (context) => _buildModelMenuItems(),
         child: Container(
-          width: 120,
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          width: 104,
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.7),
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(7),
             border: Border.all(
               color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
               width: 1,
@@ -979,13 +1251,13 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.tune, size: 16),
-              const SizedBox(width: 6),
+              const Icon(Icons.tune, size: 14),
+              const SizedBox(width: 4),
               Expanded(
                 child: Text(
                   displayLabel,
                   style: TextStyle(
-                    fontSize: 12,
+                    fontSize: 11,
                     fontWeight: FontWeight.w500,
                     color: Theme.of(context).colorScheme.onSurface,
                   ),
@@ -1000,24 +1272,216 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     );
   }
 
-  Future<void> _askAiWithPrompt(String? question) async {
+  Future<void> _askAiWithPrompt(String? question, {Uint8List? imagePngBytes}) async {
     if (_speechProvider == null || _speechProvider!.isAiLoading) return;
     final systemPrompt = await _getRealTimePrompt();
+    final wantsScreen = _autoAskUseScreen && Platform.isWindows;
+
+    Uint8List? pngBytes = imagePngBytes;
+    if (pngBytes == null && wantsScreen && !_screenCaptureInFlight) {
+      _screenCaptureInFlight = true;
+      try {
+        pngBytes = await _tryCaptureSelectedTargetPngBytes();
+      } finally {
+        _screenCaptureInFlight = false;
+      }
+    }
+
     _speechProvider!.askAi(
       question: question,
       systemPrompt: systemPrompt,
       model: _selectedAiModel,
+      imagePngBytes: pngBytes,
     );
+  }
+
+  Widget _buildUseScreenCheckboxInline() {
+    if (!Platform.isWindows) return const SizedBox.shrink();
+
+    final labelStyle = TextStyle(
+      fontSize: 13,
+      color: Colors.white,
+      shadows: const [
+        Shadow(color: Colors.black, blurRadius: 4, offset: Offset(1, 1)),
+        Shadow(color: Colors.black, blurRadius: 6, offset: Offset(-1, -1)),
+      ],
+    );
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Tooltip(
+          message: 'Include a screenshot (window or screen) when asking AI',
+          child: Checkbox(
+            value: _autoAskUseScreen,
+            onChanged: (value) async {
+              await _setAutoAskUseScreen(value ?? false);
+              _updateAutoAskCallback();
+            },
+            visualDensity: const VisualDensity(horizontal: -4, vertical: -4),
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+        ),
+        Text('Use screen', style: labelStyle),
+      ],
+    );
+  }
+
+  Widget _buildModelAndUseScreenColumn({
+    required bool disabled,
+    required ButtonStyle style,
+  }) {
+    final model = _buildModelMenuButton(disabled: disabled, style: style);
+    if (!Platform.isWindows) return model;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        model,
+        const SizedBox(height: 2),
+        _buildUseScreenCheckboxInline(),
+      ],
+    );
+  }
+
+  Widget _buildCaptureTargetPickerPill() {
+    if (!Platform.isWindows) return const SizedBox.shrink();
+
+    final pillLabel = _screenCaptureTarget == ScreenCaptureTarget.screen
+        ? (_screenCaptureMonitorLabel?.isNotEmpty == true ? _screenCaptureMonitorLabel! : 'Choose screen…')
+        : (_screenCaptureWindowTitle?.isNotEmpty == true ? _screenCaptureWindowTitle! : 'Choose window…');
+
+    return Tooltip(
+      message: 'Choose what to capture',
+      child: InkWell(
+        onTap: _showScreenCapturePicker,
+        borderRadius: BorderRadius.circular(999),
+        child: Container(
+          height: 28,
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.18),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                _screenCaptureTarget == ScreenCaptureTarget.screen ? Icons.desktop_windows : Icons.crop_free,
+                size: 16,
+                color: Colors.white,
+              ),
+              const SizedBox(width: 6),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 200),
+                child: Text(
+                  pillLabel,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 4),
+              const Icon(Icons.arrow_drop_down, color: Colors.white, size: 18),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<Uint8List?> _tryCaptureSelectedTargetPngBytes() async {
+    try {
+      dynamic pixels;
+      if (_screenCaptureTarget == ScreenCaptureTarget.screen) {
+        var monitorId = _screenCaptureMonitorId;
+        if (monitorId == null) {
+          final monitors = await _listMonitors();
+          if (monitors.isNotEmpty) {
+            final preferred = monitors.firstWhere((m) => m.isPrimary, orElse: () => monitors.first);
+            monitorId = preferred.id;
+            await _setScreenCaptureMonitorSelection(monitorId: preferred.id, monitorLabel: preferred.label);
+          }
+        }
+        if (monitorId == null) return null;
+        pixels = await _windowChannel.invokeMethod<dynamic>(
+          'captureMonitorPixels',
+          <String, dynamic>{'monitorId': monitorId},
+        );
+      } else if (_screenCaptureWindowHwnd != null) {
+        pixels = await _windowChannel.invokeMethod<dynamic>(
+          'captureWindowPixels',
+          <String, dynamic>{'hwnd': _screenCaptureWindowHwnd},
+        );
+      } else {
+        pixels = await _windowChannel.invokeMethod<dynamic>('captureActiveWindowPixels');
+      }
+      if (pixels is! Map) return null;
+      final width = (pixels['width'] as num?)?.toInt() ?? 0;
+      final height = (pixels['height'] as num?)?.toInt() ?? 0;
+      final bytes = pixels['bytes'];
+      if (width <= 0 || height <= 0 || bytes is! Uint8List || bytes.isEmpty) return null;
+
+      final image = await _decodeBgraToImage(bytes, width, height);
+      ui.Image toEncode = image;
+
+      // Downscale large captures to keep requests fast + within JSON limits.
+      const maxDim = 1600;
+      if (image.width > maxDim || image.height > maxDim) {
+        final sx = maxDim / image.width;
+        final sy = maxDim / image.height;
+        final scale = sx < sy ? sx : sy;
+        final newW = (image.width * scale).round().clamp(1, maxDim);
+        final newH = (image.height * scale).round().clamp(1, maxDim);
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder);
+        final paint = Paint()..filterQuality = FilterQuality.medium;
+        canvas.drawImageRect(
+          image,
+          Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+          Rect.fromLTWH(0, 0, newW.toDouble(), newH.toDouble()),
+          paint,
+        );
+        final picture = recorder.endRecording();
+        final resized = await picture.toImage(newW, newH);
+        picture.dispose();
+        image.dispose();
+        toEncode = resized;
+      }
+
+      final byteData = await toEncode.toByteData(format: ui.ImageByteFormat.png);
+      toEncode.dispose();
+      return byteData?.buffer.asUint8List();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<ui.Image> _decodeBgraToImage(Uint8List bgraBytes, int width, int height) {
+    final completer = Completer<ui.Image>();
+    ui.decodeImageFromPixels(
+      bgraBytes,
+      width,
+      height,
+      ui.PixelFormat.bgra8888,
+      (img) => completer.complete(img),
+    );
+    return completer.future;
   }
   
   void _updateAutoAskCallback() {
     if (_speechProvider == null) return;
     if (_autoAsk) {
       // Set callback to auto-ask when question is detected
-      _speechProvider!.setAutoAskCallback((question) {
-        if (mounted && !_speechProvider!.isAiLoading) {
-          _askAiWithPrompt(question);
-        }
+      _speechProvider!.setAutoAskCallback((question) async {
+        if (!mounted) return;
+        await _askAiWithPrompt(question);
       });
     } else {
       // Remove callback when auto ask is disabled
@@ -1029,6 +1493,46 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     if (_speechProvider != null && !_speechProvider!.isAiLoading) {
       _askAiWithPrompt(question);
     }
+  }
+
+  Future<void> _showAskAiDialog() async {
+    if (!mounted) return;
+    if (_speechProvider?.isAiLoading == true) return;
+
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Ask AI'),
+          content: TextField(
+            controller: _askAiController,
+            autofocus: true,
+            decoration: const InputDecoration(
+              hintText: 'Type a question (optional)',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            textInputAction: TextInputAction.send,
+            onSubmitted: (value) => Navigator.pop(context, value.trim()),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, null),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, _askAiController.text.trim()),
+              child: const Text('Ask'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (!mounted) return;
+    if (result == null) return;
+    final q = result.trim();
+    await _askAiWithPrompt(q.isEmpty ? null : q);
   }
 
   Future<void> _loadQuestionTemplates() async {
@@ -1307,7 +1811,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
       children: [
         // Small top status row with connection state and optional checkboxes
         SizedBox(
-          height: dockButtonSize,
+          height: Platform.isWindows ? 64.0 : dockButtonSize,
           child: Row(
             children: [
               // Connection state indicator
@@ -1323,42 +1827,59 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                 ),
               ),
               const SizedBox(width: 12),
-              // Use mic checkbox
-              Checkbox(
-                value: speechProvider.useMic,
-                onChanged: (value) {
-                  final newValue = value ?? false;
-                  _speechProvider?.setUseMic(newValue);
-                },
-                visualDensity: VisualDensity.compact,
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // Use mic checkbox
+                        Checkbox(
+                          value: speechProvider.useMic,
+                          onChanged: (value) {
+                            final newValue = value ?? false;
+                            _speechProvider?.setUseMic(newValue);
+                          },
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        Text('Use mic', style: TextStyle(
+                          fontSize: 13,
+                          color: Colors.white,
+                          shadows: [
+                            Shadow(color: Colors.black, blurRadius: 4, offset: const Offset(1, 1)),
+                            Shadow(color: Colors.black, blurRadius: 6, offset: const Offset(-1, -1)),
+                          ],
+                        )),
+                        const SizedBox(width: 16),
+                        // Auto Ask checkbox
+                        Checkbox(
+                          value: _autoAsk,
+                          onChanged: (value) {
+                            setState(() => _autoAsk = value ?? false);
+                            _updateAutoAskCallback();
+                          },
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        Text('Auto Ask', style: TextStyle(
+                          fontSize: 13,
+                          color: Colors.white,
+                          shadows: [
+                            Shadow(color: Colors.black, blurRadius: 4, offset: const Offset(1, 1)),
+                            Shadow(color: Colors.black, blurRadius: 6, offset: const Offset(-1, -1)),
+                          ],
+                        )),
+                        if (Platform.isWindows) ...[
+                          const SizedBox(width: 12),
+                          _buildCaptureTargetPickerPill(),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
               ),
-              Text('Use mic', style: TextStyle(
-                fontSize: 13,
-                color: Colors.white,
-                shadows: [
-                  Shadow(color: Colors.black, blurRadius: 4, offset: const Offset(1, 1)),
-                  Shadow(color: Colors.black, blurRadius: 6, offset: const Offset(-1, -1)),
-                ],
-              )),
-              const SizedBox(width: 16),
-              // Auto Ask checkbox
-              Checkbox(
-                value: _autoAsk,
-                onChanged: (value) {
-                  setState(() => _autoAsk = value ?? false);
-                  _updateAutoAskCallback();
-                },
-                visualDensity: VisualDensity.compact,
-              ),
-              Text('Auto Ask', style: TextStyle(
-                fontSize: 13,
-                color: Colors.white,
-                shadows: [
-                  Shadow(color: Colors.black, blurRadius: 4, offset: const Offset(1, 1)),
-                  Shadow(color: Colors.black, blurRadius: 6, offset: const Offset(-1, -1)),
-                ],
-              )),
-              const Spacer(),
+              const SizedBox(width: 12),
               // Recording status
               if (isRec) ...[
                 Container(
@@ -1645,50 +2166,12 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Prompt input + Ask button ABOVE the AI response field (same as two-column)
+          // Quick ask controls ABOVE the AI response field (same as two-column)
           SizedBox(
-            height: dockButtonSize,
+            height: Platform.isWindows ? 64.0 : dockButtonSize,
             child: Row(
+              mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                Expanded(
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.4),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.white.withValues(alpha: 0.5)),
-                    ),
-                    child: TextField(
-                      controller: _askAiController,
-                      enabled: !speechProvider.isAiLoading,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        shadows: [
-                          Shadow(color: Colors.black, blurRadius: 4, offset: Offset(1, 1)),
-                          Shadow(color: Colors.black, blurRadius: 6, offset: Offset(-1, -1)),
-                        ],
-                      ),
-                      decoration: InputDecoration(
-                        hintText: 'Ask AI… (Ctrl+Enter)',
-                        hintStyle: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.7),
-                          shadows: [
-                            Shadow(color: Colors.black, blurRadius: 4, offset: const Offset(1, 1)),
-                            Shadow(color: Colors.black, blurRadius: 6, offset: const Offset(-1, -1)),
-                          ],
-                        ),
-                        filled: false,
-                        border: InputBorder.none,
-                        enabledBorder: InputBorder.none,
-                        focusedBorder: InputBorder.none,
-                        isDense: true,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-                      ),
-                      textInputAction: TextInputAction.send,
-                      onSubmitted: (value) => _askAiWithPrompt(value),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 10),
                 _QuestionTemplateButton(
                   cachedQuestions: _cachedQuestions,
                   onQuestionSelected: _askQuestionFromTemplate,
@@ -1699,16 +2182,16 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                   },
                 ),
                 const SizedBox(width: 10),
-                _buildModelMenuButton(
+                _buildModelAndUseScreenColumn(
                   disabled: speechProvider.isAiLoading,
                   style: templatesButtonStyle,
                 ),
                 const SizedBox(width: 10),
                 IconButton.filled(
-                  tooltip: 'Ask (Ctrl+Enter)',
+                  tooltip: 'Ask… (Ctrl+Enter)',
                   onPressed: speechProvider.isAiLoading
                       ? null
-                      : () => _askAiWithPrompt(_askAiController.text),
+                      : _showAskAiDialog,
                   icon: speechProvider.isAiLoading
                       ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                       : const Icon(Icons.auto_awesome),
@@ -1873,50 +2356,12 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Prompt input + Ask button ABOVE the AI response field
+        // Quick ask controls ABOVE the AI response field
         SizedBox(
-          height: dockButtonSize,
+          height: Platform.isWindows ? 64.0 : dockButtonSize,
           child: Row(
+            mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              Expanded(
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.4),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.white.withValues(alpha: 0.5)),
-                  ),
-                  child: TextField(
-                    controller: _askAiController,
-                    enabled: !speechProvider.isAiLoading,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      shadows: [
-                        Shadow(color: Colors.black, blurRadius: 4, offset: Offset(1, 1)),
-                        Shadow(color: Colors.black, blurRadius: 6, offset: Offset(-1, -1)),
-                      ],
-                    ),
-                    decoration: InputDecoration(
-                      hintText: 'Ask AI… (Ctrl+Enter)',
-                      hintStyle: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.7),
-                        shadows: [
-                          Shadow(color: Colors.black, blurRadius: 4, offset: const Offset(1, 1)),
-                          Shadow(color: Colors.black, blurRadius: 6, offset: const Offset(-1, -1)),
-                        ],
-                      ),
-                      filled: false,
-                      border: InputBorder.none,
-                      enabledBorder: InputBorder.none,
-                      focusedBorder: InputBorder.none,
-                      isDense: true,
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-                    ),
-                    textInputAction: TextInputAction.send,
-                    onSubmitted: (value) => _askAiWithPrompt(value),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 10),
               _QuestionTemplateButton(
                 cachedQuestions: _cachedQuestions,
                 onQuestionSelected: _askQuestionFromTemplate,
@@ -1927,16 +2372,16 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                 },
               ),
               const SizedBox(width: 10),
-              _buildModelMenuButton(
+              _buildModelAndUseScreenColumn(
                 disabled: speechProvider.isAiLoading,
                 style: templatesButtonStyle,
               ),
               const SizedBox(width: 10),
               IconButton.filled(
-                tooltip: 'Ask (Ctrl+Enter)',
+                tooltip: 'Ask… (Ctrl+Enter)',
                 onPressed: speechProvider.isAiLoading
                     ? null
-                    : () => _askAiWithPrompt(_askAiController.text),
+                    : _showAskAiDialog,
                 icon: speechProvider.isAiLoading
                     ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                     : const Icon(Icons.auto_awesome),
@@ -2101,14 +2546,37 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
       builder: (context, speechProvider, meetingProvider, child) {
         _maybeAutoScroll(speechProvider);
 
-        final aiText = speechProvider.aiErrorMessage.isNotEmpty
-            ? 'Error: ${speechProvider.aiErrorMessage}'
-            : speechProvider.aiResponse;
+        // Never show error text inside the AI response field.
+        // Errors are surfaced via SnackBar instead.
+        final aiText = speechProvider.aiResponse;
         if (_aiResponseController.text != aiText) {
           _aiResponseController.text = aiText;
           _aiResponseController.selection = TextSelection.collapsed(
             offset: _aiResponseController.text.length,
           );
+        }
+
+        final rawErr = speechProvider.aiErrorMessage.trim();
+        if (rawErr.isNotEmpty && rawErr != _lastAiErrorShown) {
+          _lastAiErrorShown = rawErr;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            final cleaned = rawErr.replaceFirst(RegExp(r'^\s*Exception:\s*'), '').trim();
+            final msg = cleaned.isNotEmpty ? cleaned : 'AI request failed';
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(msg),
+                action: msg.toLowerCase().contains('upgrade')
+                    ? SnackBarAction(
+                        label: 'Upgrade',
+                        onPressed: () {
+                          // No dedicated upgrade page wired yet; keep it as a clear hint.
+                        },
+                      )
+                    : null,
+              ),
+            );
+          });
         }
 
         final session = meetingProvider.currentSession;
@@ -2217,7 +2685,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
               ),
               _AskAiIntent: CallbackAction<_AskAiIntent>(
                 onInvoke: (_) {
-                  _askAiWithPrompt(_askAiController.text);
+                  _showAskAiDialog();
                   return null;
                 },
               ),
@@ -2652,6 +3120,7 @@ class _QuestionTemplateButton extends StatefulWidget {
 
 class _QuestionTemplateButtonState extends State<_QuestionTemplateButton> {
   static const double _buttonSize = 48.0;
+  static const double _menuItemHeight = 36.0;
   
   Future<void> _showMenu() async {
     // Reload questions before showing menu
@@ -2682,18 +3151,30 @@ class _QuestionTemplateButtonState extends State<_QuestionTemplateButton> {
       items: [
         ...questions.map((question) {
           return PopupMenuItem<String>(
+            height: _menuItemHeight,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
             value: question,
-            child: Text(question),
+            child: Text(
+              question,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontSize: 13),
+            ),
           );
         }),
         const PopupMenuDivider(),
         PopupMenuItem<String>(
+          height: _menuItemHeight,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
           value: '__manage_templates__',
           child: Row(
             children: [
-              Icon(Icons.settings, size: 20, color: Theme.of(context).colorScheme.onSurface),
+              Icon(Icons.settings, size: 18, color: Theme.of(context).colorScheme.onSurface),
               const SizedBox(width: 8),
-              const Text('Manage Templates'),
+              Text(
+                'Manage Templates',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontSize: 13),
+              ),
             ],
           ),
         ),
@@ -2738,6 +3219,475 @@ class _QuestionTemplateButtonState extends State<_QuestionTemplateButton> {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _ScreenCapturePickerDialog extends StatefulWidget {
+  final ScreenCaptureTarget initialTarget;
+  final int? initialWindowHwnd;
+  final int? initialMonitorId; // null = all screens
+  final Future<List<_MonitorInfo>> Function() loadMonitors;
+  final Future<List<_ShareableWindowInfo>> Function() loadWindows;
+
+  const _ScreenCapturePickerDialog({
+    required this.initialTarget,
+    required this.initialWindowHwnd,
+    required this.initialMonitorId,
+    required this.loadMonitors,
+    required this.loadWindows,
+  });
+
+  @override
+  State<_ScreenCapturePickerDialog> createState() => _ScreenCapturePickerDialogState();
+}
+
+class _ScreenCapturePickerDialogState extends State<_ScreenCapturePickerDialog> {
+  late ScreenCaptureTarget _target;
+  int? _selectedHwnd;
+  int? _selectedMonitorId; // null = all screens
+  String? _selectedMonitorLabel;
+  Future<Map<String, dynamic>>? _dataFuture;
+  final Map<String, ui.Image> _previews = {};
+  final Set<String> _previewLoading = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _target = widget.initialTarget;
+    _selectedHwnd = widget.initialWindowHwnd;
+    _selectedMonitorId = widget.initialMonitorId;
+    _dataFuture = _loadAll();
+  }
+
+  Future<Map<String, dynamic>> _loadAll() async {
+    final results = await Future.wait<dynamic>([
+      widget.loadMonitors(),
+      widget.loadWindows(),
+    ]);
+    final monitors = (results[0] as List<_MonitorInfo>?) ?? const <_MonitorInfo>[];
+    final windows = (results[1] as List<_ShareableWindowInfo>?) ?? const <_ShareableWindowInfo>[];
+    return {'monitors': monitors, 'windows': windows};
+  }
+
+  @override
+  void dispose() {
+    for (final img in _previews.values) {
+      img.dispose();
+    }
+    _previews.clear();
+    super.dispose();
+  }
+
+  void _refresh() {
+    setState(() {
+      _dataFuture = _loadAll();
+    });
+  }
+
+  Future<ui.Image?> _decodeBgra(dynamic pixels) async {
+    if (pixels is! Map) return null;
+    final w = (pixels['width'] as num?)?.toInt() ?? 0;
+    final h = (pixels['height'] as num?)?.toInt() ?? 0;
+    final bytes = pixels['bytes'];
+    if (w <= 0 || h <= 0 || bytes is! Uint8List || bytes.isEmpty) return null;
+    final completer = Completer<ui.Image>();
+    ui.decodeImageFromPixels(bytes, w, h, ui.PixelFormat.bgra8888, (img) => completer.complete(img));
+    return completer.future;
+  }
+
+  Future<void> _ensurePreview(String key, Future<dynamic> Function() loader) async {
+    if (_previews.containsKey(key)) return;
+    if (_previewLoading.contains(key)) return;
+    _previewLoading.add(key);
+    try {
+      final pixels = await loader();
+      if (!mounted) return;
+      final img = await _decodeBgra(pixels);
+      if (img == null) return;
+      if (!mounted) {
+        img.dispose();
+        return;
+      }
+      setState(() {
+        _previews[key] = img;
+      });
+    } catch (_) {
+      // Ignore preview failures; keep placeholder.
+    } finally {
+      _previewLoading.remove(key);
+    }
+  }
+
+  Widget _windowTile(_ShareableWindowInfo w) {
+    final selected = _target == ScreenCaptureTarget.window && _selectedHwnd == w.hwnd;
+    final key = 'w:${w.hwnd}';
+    final preview = _previews[key];
+    if (preview == null) {
+      // Fire-and-forget: load preview after build.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _ensurePreview(
+          key,
+          () => _MeetingPageEnhancedState._windowChannel.invokeMethod<dynamic>(
+            'captureWindowThumbnailPixels',
+            <String, dynamic>{'hwnd': w.hwnd, 'maxWidth': 360, 'maxHeight': 225},
+          ),
+        );
+      });
+    }
+
+    return InkWell(
+      onTap: () {
+        setState(() {
+          _target = ScreenCaptureTarget.window;
+          _selectedHwnd = w.hwnd;
+        });
+      },
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: selected ? Theme.of(context).colorScheme.primary : Theme.of(context).dividerColor,
+            width: selected ? 2 : 1,
+          ),
+          color: Theme.of(context).colorScheme.surface,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            AspectRatio(
+              aspectRatio: 16 / 9,
+              child: ClipRRect(
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    if (preview != null)
+                      Container(
+                        color: Colors.black,
+                        alignment: Alignment.center,
+                        child: RawImage(image: preview, fit: BoxFit.contain),
+                      )
+                    else
+                      Container(
+                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                        child: Center(
+                          child: Icon(
+                            Icons.crop_free,
+                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+                          ),
+                        ),
+                      ),
+                    if (selected)
+                      Align(
+                        alignment: Alignment.topRight,
+                        child: Padding(
+                          padding: const EdgeInsets.all(8),
+                          child: Container(
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.55),
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: const Icon(Icons.check, color: Colors.white, size: 16),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      w.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  if (w.isMinimized)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 8),
+                      child: Text(
+                        'Min',
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                            ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _screenTileMonitor(_MonitorInfo m) {
+    final selected = _target == ScreenCaptureTarget.screen && _selectedMonitorId == m.id;
+    final key = 'monitor:${m.id}';
+    final preview = _previews[key];
+    if (preview == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _ensurePreview(
+          key,
+          () => _MeetingPageEnhancedState._windowChannel.invokeMethod<dynamic>(
+            'captureMonitorThumbnailPixels',
+            <String, dynamic>{'monitorId': m.id, 'maxWidth': 360, 'maxHeight': 225},
+          ),
+        );
+      });
+    }
+    return _screenTileBase(
+      selected: selected,
+      title: m.label,
+      subtitle: '${m.width}×${m.height}',
+      icon: Icons.monitor,
+      preview: preview,
+      onTap: () {
+        setState(() {
+          _target = ScreenCaptureTarget.screen;
+          _selectedHwnd = null;
+          _selectedMonitorId = m.id;
+          _selectedMonitorLabel = m.label;
+        });
+      },
+    );
+  }
+
+  Widget _screenTileBase({
+    required bool selected,
+    required String title,
+    required String subtitle,
+    required IconData icon,
+    required ui.Image? preview,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: selected ? Theme.of(context).colorScheme.primary : Theme.of(context).dividerColor,
+            width: selected ? 2 : 1,
+          ),
+          color: Theme.of(context).colorScheme.surface,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            AspectRatio(
+              aspectRatio: 16 / 9,
+              child: ClipRRect(
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    if (preview != null)
+                      Container(
+                        color: Colors.black,
+                        alignment: Alignment.center,
+                        child: RawImage(image: preview, fit: BoxFit.contain),
+                      )
+                    else
+                      Container(
+                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                        child: Center(
+                          child: Icon(
+                            icon,
+                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+                          ),
+                        ),
+                      ),
+                    if (selected)
+                      Align(
+                        alignment: Alignment.topRight,
+                        child: Padding(
+                          padding: const EdgeInsets.all(8),
+                          child: Container(
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.55),
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: const Icon(Icons.check, color: Colors.white, size: 16),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                        ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Row(
+        children: [
+          const Expanded(child: Text('Choose what to capture')),
+          IconButton(
+            tooltip: 'Refresh',
+            onPressed: _refresh,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: 560,
+        height: 420,
+        child: FutureBuilder<Map<String, dynamic>>(
+          future: _dataFuture,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            final data = snapshot.data ?? const <String, dynamic>{};
+            final monitors = (data['monitors'] as List<_MonitorInfo>?) ?? const <_MonitorInfo>[];
+            final windows = (data['windows'] as List<_ShareableWindowInfo>?) ?? const <_ShareableWindowInfo>[];
+
+            if (_selectedMonitorId == null && monitors.isNotEmpty) {
+              final preferred = monitors.firstWhere((m) => m.isPrimary, orElse: () => monitors.first);
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (!mounted) return;
+                if (_selectedMonitorId != null) return;
+                setState(() {
+                  _target = ScreenCaptureTarget.screen;
+                  _selectedHwnd = null;
+                  _selectedMonitorId = preferred.id;
+                  _selectedMonitorLabel = preferred.label;
+                });
+              });
+            }
+
+            return CustomScrollView(
+              slivers: [
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      'Screens',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ),
+                if (monitors.isEmpty)
+                  const SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Text('No screens found.'),
+                    ),
+                  )
+                else
+                  SliverGrid(
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      crossAxisSpacing: 12,
+                      mainAxisSpacing: 12,
+                      childAspectRatio: 1.25,
+                    ),
+                    delegate: SliverChildBuilderDelegate(
+                      (context, i) => _screenTileMonitor(monitors[i]),
+                      childCount: monitors.length,
+                    ),
+                  ),
+                const SliverToBoxAdapter(child: SizedBox(height: 16)),
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      'Windows',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ),
+                if (windows.isEmpty)
+                  const SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Text('No windows found. Focus another app and press Refresh.'),
+                    ),
+                  )
+                else
+                  SliverGrid(
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      crossAxisSpacing: 12,
+                      mainAxisSpacing: 12,
+                      childAspectRatio: 1.25,
+                    ),
+                    delegate: SliverChildBuilderDelegate(
+                      (context, i) => _windowTile(windows[i]),
+                      childCount: windows.length,
+                    ),
+                  ),
+                const SliverToBoxAdapter(child: SizedBox(height: 8)),
+              ],
+            );
+          },
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () async {
+            if (_target == ScreenCaptureTarget.screen) {
+              if (_selectedMonitorId == null || _selectedMonitorLabel == null) return;
+              Navigator.pop(
+                context,
+                _ScreenCaptureChoice._(ScreenCaptureTarget.screen, null, _selectedMonitorId, _selectedMonitorLabel),
+              );
+              return;
+            }
+            final hwnd = _selectedHwnd;
+            if (hwnd == null) return;
+            final data = await (_dataFuture ?? _loadAll());
+            final windows = (data['windows'] as List<_ShareableWindowInfo>?) ?? const <_ShareableWindowInfo>[];
+            final win = windows.where((w) => w.hwnd == hwnd).cast<_ShareableWindowInfo?>().firstWhere((w) => w != null, orElse: () => null);
+            if (win == null) return;
+            Navigator.pop(context, _ScreenCaptureChoice.window(win));
+          },
+          child: const Text('Share'),
+        ),
+      ],
     );
   }
 }

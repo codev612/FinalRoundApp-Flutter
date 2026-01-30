@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -239,9 +240,13 @@ class AiService {
     String mode = 'reply',
     String? systemPrompt,
     String? model,
+    Uint8List? imagePngBytes,
     Duration timeout = const Duration(seconds: 60),
   }) async {
-    if (aiWsUrl != null) {
+    final hasImage = imagePngBytes != null && imagePngBytes.isNotEmpty;
+
+    // For image requests, prefer HTTP (payload can be large and WS may have size limits).
+    if (aiWsUrl != null && !hasImage) {
       final buffer = StringBuffer();
       try {
         await for (final delta in streamRespond(
@@ -278,6 +283,10 @@ class AiService {
     final chosenModel = model?.trim() ?? '';
     if (chosenModel.isNotEmpty) payload['model'] = chosenModel;
 
+    if (hasImage) {
+      payload['imagePngBase64'] = base64Encode(imagePngBytes!);
+    }
+
     final headers = <String, String>{
       'Content-Type': 'application/json',
     };
@@ -294,13 +303,37 @@ class AiService {
         .timeout(timeout);
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
+      final bodyText = response.body;
+      String? extracted;
       try {
-        final data = jsonDecode(response.body);
-        final error = data is Map<String, dynamic> ? (data['error']?.toString() ?? '') : '';
-        throw Exception(error.isNotEmpty ? error : 'HTTP ${response.statusCode}');
-      } catch (_) {
-        throw Exception('HTTP ${response.statusCode}');
+        final data = jsonDecode(bodyText);
+        if (data is Map<String, dynamic>) {
+          final e = (data['error']?.toString() ?? '').trim();
+          final m = (data['message']?.toString() ?? '').trim();
+          extracted = e.isNotEmpty ? e : (m.isNotEmpty ? m : null);
+        }
+      } on FormatException {
+        // Non-JSON response body
       }
+
+      if (response.statusCode == 402) {
+        // Always present a clear upgrade message for quota errors.
+        final msg = (extracted ?? '').trim();
+        throw Exception(msg.isNotEmpty ? msg : 'AI usage limit reached. Please upgrade your plan to continue.');
+      }
+
+      if ((extracted ?? '').trim().isNotEmpty) {
+        throw Exception(extracted!.trim());
+      }
+
+      final trimmed = bodyText.trim();
+      if (trimmed.isNotEmpty) {
+        // Avoid dumping huge HTML pages into the UI.
+        final safe = trimmed.length > 400 ? '${trimmed.substring(0, 400)}…' : trimmed;
+        throw Exception(safe);
+      }
+
+      throw Exception('HTTP ${response.statusCode}');
     }
 
     final data = jsonDecode(response.body);

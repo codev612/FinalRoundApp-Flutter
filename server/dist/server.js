@@ -46,7 +46,8 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 // Middleware
 app.use(cors());
-app.use(express.json());
+// Increase JSON body limit to support screenshot (base64) payloads.
+app.use(express.json({ limit: '8mb' }));
 // Serve static files from public directory
 const publicDir = join(__dirname, '../public');
 app.use(express.static(publicDir));
@@ -718,7 +719,7 @@ app.post('/ai/respond', authenticate, async (req, res) => {
                 error: 'OpenAI API key not configured. Set OPENAI_API_KEY in backend .env',
             });
         }
-        const { turns, mode, question, systemPrompt: providedSystemPrompt, model: requestedModel } = req.body ?? {};
+        const { turns, mode, question, systemPrompt: providedSystemPrompt, model: requestedModel, imagePngBase64 } = req.body ?? {};
         if (!Array.isArray(turns)) {
             return res.status(400).json({ error: 'Missing turns[]' });
         }
@@ -726,8 +727,14 @@ app.post('/ai/respond', authenticate, async (req, res) => {
         if (questionText.length > 800) {
             return res.status(400).json({ error: 'Question too long (max 800 chars)' });
         }
+        const screenshotBase64 = typeof imagePngBase64 === 'string' ? imagePngBase64.trim() : '';
+        const hasScreenshot = screenshotBase64.length > 0;
+        // Safety cap; overall request cap enforced by express.json({limit}).
+        if (screenshotBase64.length > 6_000_000) {
+            return res.status(400).json({ error: 'Screenshot too large' });
+        }
         // Allow empty turns if a question is provided
-        if (turns.length === 0 && questionText.length === 0) {
+        if (turns.length === 0 && questionText.length === 0 && !hasScreenshot) {
             return res.status(400).json({ error: 'Missing turns[] or question' });
         }
         // Basic size limits to avoid accidental huge payloads.
@@ -825,6 +832,17 @@ app.post('/ai/respond', authenticate, async (req, res) => {
         if (isAutoModelRequested(model) || model.trim().length === 0) {
             model = pickAutoModel({ planTier: plan, ent, requestMode, stats: monthlyStats });
         }
+        // If screenshot is present, ensure we use a vision-capable model (and allowed for plan).
+        if (hasScreenshot) {
+            const visionCandidates = ['gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini', 'gpt-4o', 'gpt-5.2', 'gpt-5.1', 'gpt-5'];
+            if (!visionCandidates.includes(model)) {
+                const fallback = visionCandidates.find((m) => ent.allowedModels.includes(m));
+                if (!fallback) {
+                    return res.status(403).json({ error: 'No vision-capable model available for your plan.' });
+                }
+                model = fallback;
+            }
+        }
         if (!ent.allowedModels.includes(model)) {
             return res.status(403).json({ error: `Model not allowed for plan: ${ent.plan}` });
         }
@@ -856,11 +874,20 @@ app.post('/ai/respond', authenticate, async (req, res) => {
         }
         const maxTokens = requestMode === 'insights' ? 600 : requestMode === 'questions' ? 300 : 400;
         try {
+            const userMessage = hasScreenshot
+                ? {
+                    role: 'user',
+                    content: [
+                        { type: 'text', text: userPrompt },
+                        { type: 'image_url', image_url: { url: `data:image/png;base64,${screenshotBase64}` } },
+                    ],
+                }
+                : { role: 'user', content: userPrompt };
             const completion = await openai.chat.completions.create({
                 model,
                 messages: [
                     { role: 'system', content: systemPrompt },
-                    { role: 'user', content: userPrompt },
+                    userMessage,
                 ],
                 max_completion_tokens: maxTokens,
                 temperature: 0.2,
