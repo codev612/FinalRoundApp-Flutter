@@ -1379,48 +1379,15 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
           Card(
             child: Consumer<ThemeProvider>(
               builder: (context, themeProvider, child) {
-                return ExpansionTile(
-                  leading: const Icon(Icons.palette),
-                  title: const Text('Theme'),
-                  subtitle: Text(_getThemeModeLabel(themeProvider.themeMode)),
-                  shape: const RoundedRectangleBorder(
-                    side: BorderSide.none,
-                  ),
-                  collapsedShape: const RoundedRectangleBorder(
-                    side: BorderSide.none,
-                  ),
-                  children: [
-                    RadioListTile<ThemeMode>(
-                      title: const Text('Light'),
-                      value: ThemeMode.light,
-                      groupValue: themeProvider.themeMode,
-                      onChanged: (value) {
-                        if (value != null) {
-                          themeProvider.setThemeMode(value, context: context);
-                        }
-                      },
-                    ),
-                    RadioListTile<ThemeMode>(
-                      title: const Text('Dark'),
-                      value: ThemeMode.dark,
-                      groupValue: themeProvider.themeMode,
-                      onChanged: (value) {
-                        if (value != null) {
-                          themeProvider.setThemeMode(value, context: context);
-                        }
-                      },
-                    ),
-                    RadioListTile<ThemeMode>(
-                      title: const Text('System'),
-                      value: ThemeMode.system,
-                      groupValue: themeProvider.themeMode,
-                      onChanged: (value) {
-                        if (value != null) {
-                          themeProvider.setThemeMode(value, context: context);
-                        }
-                      },
-                    ),
-                  ],
+                // Avoid ExpansionTile on Windows here: it triggers an accessibility "announce"
+                // message that can spam the console with:
+                // "Announce message 'viewId' property must be a FlutterViewId."
+                //
+                // This custom expandable card keeps the UX but doesn't call announce.
+                return _ThemeModeCard(
+                  label: _getThemeModeLabel(themeProvider.themeMode),
+                  value: themeProvider.themeMode,
+                  onChanged: (mode) => themeProvider.setThemeMode(mode, context: context),
                 );
               },
             ),
@@ -1439,5 +1406,78 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
       case ThemeMode.system:
         return 'System';
     }
+  }
+}
+
+class _ThemeModeCard extends StatefulWidget {
+  final String label;
+  final ThemeMode value;
+  final ValueChanged<ThemeMode> onChanged;
+
+  const _ThemeModeCard({
+    required this.label,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  State<_ThemeModeCard> createState() => _ThemeModeCardState();
+}
+
+class _ThemeModeCardState extends State<_ThemeModeCard> with TickerProviderStateMixin {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ListTile(
+          leading: const Icon(Icons.palette),
+          title: const Text('Theme'),
+          subtitle: Text(widget.label),
+          trailing: Icon(_expanded ? Icons.expand_less : Icons.expand_more),
+          onTap: () => setState(() => _expanded = !_expanded),
+        ),
+        AnimatedSize(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          alignment: Alignment.topCenter,
+          child: _expanded
+              ? Column(
+                  children: [
+                    RadioListTile<ThemeMode>(
+                      title: const Text('Light'),
+                      value: ThemeMode.light,
+                      groupValue: widget.value,
+                      onChanged: (value) {
+                        if (value == null) return;
+                        widget.onChanged(value);
+                      },
+                    ),
+                    RadioListTile<ThemeMode>(
+                      title: const Text('Dark'),
+                      value: ThemeMode.dark,
+                      groupValue: widget.value,
+                      onChanged: (value) {
+                        if (value == null) return;
+                        widget.onChanged(value);
+                      },
+                    ),
+                    RadioListTile<ThemeMode>(
+                      title: const Text('System'),
+                      value: ThemeMode.system,
+                      groupValue: widget.value,
+                      onChanged: (value) {
+                        if (value == null) return;
+                        widget.onChanged(value);
+                      },
+                    ),
+                  ],
+                )
+              : const SizedBox.shrink(),
+        ),
+      ],
+    );
   }
 }

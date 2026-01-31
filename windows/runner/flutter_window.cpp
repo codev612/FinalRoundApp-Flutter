@@ -116,6 +116,85 @@ bool ReadHBitmapToBgra(HBITMAP hbmp, std::vector<uint8_t>& out, int& width, int&
   return lines == height;
 }
 
+bool ScaleBgraToBgraGdi(const uint8_t* src,
+                        int src_w,
+                        int src_h,
+                        int dst_w,
+                        int dst_h,
+                        std::vector<uint8_t>& out) {
+  if (!src) return false;
+  if (src_w <= 0 || src_h <= 0 || dst_w <= 0 || dst_h <= 0) return false;
+
+  HDC screen_dc = GetDC(nullptr);
+  if (!screen_dc) return false;
+  HDC mem_dc = CreateCompatibleDC(screen_dc);
+  if (!mem_dc) {
+    ReleaseDC(nullptr, screen_dc);
+    return false;
+  }
+
+  BITMAPINFO bmi_dst{};
+  bmi_dst.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bmi_dst.bmiHeader.biWidth = dst_w;
+  bmi_dst.bmiHeader.biHeight = -dst_h;  // top-down
+  bmi_dst.bmiHeader.biPlanes = 1;
+  bmi_dst.bmiHeader.biBitCount = 32;
+  bmi_dst.bmiHeader.biCompression = BI_RGB;
+
+  void* bits_dst = nullptr;
+  HBITMAP dib_dst = CreateDIBSection(screen_dc, &bmi_dst, DIB_RGB_COLORS, &bits_dst, nullptr, 0);
+  if (!dib_dst || !bits_dst) {
+    if (dib_dst) DeleteObject(dib_dst);
+    DeleteDC(mem_dc);
+    ReleaseDC(nullptr, screen_dc);
+    return false;
+  }
+
+  HGDIOBJ old = SelectObject(mem_dc, dib_dst);
+  SetStretchBltMode(mem_dc, HALFTONE);
+
+  BITMAPINFO bmi_src{};
+  bmi_src.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bmi_src.bmiHeader.biWidth = src_w;
+  bmi_src.bmiHeader.biHeight = -src_h;  // top-down
+  bmi_src.bmiHeader.biPlanes = 1;
+  bmi_src.bmiHeader.biBitCount = 32;
+  bmi_src.bmiHeader.biCompression = BI_RGB;
+
+  const int res = StretchDIBits(
+      mem_dc,
+      0,
+      0,
+      dst_w,
+      dst_h,
+      0,
+      0,
+      src_w,
+      src_h,
+      src,
+      &bmi_src,
+      DIB_RGB_COLORS,
+      SRCCOPY);
+
+  if (res == 0) {
+    SelectObject(mem_dc, old);
+    DeleteObject(dib_dst);
+    DeleteDC(mem_dc);
+    ReleaseDC(nullptr, screen_dc);
+    return false;
+  }
+
+  const size_t size = static_cast<size_t>(dst_w) * static_cast<size_t>(dst_h) * 4u;
+  out.resize(size);
+  memcpy(out.data(), bits_dst, size);
+
+  SelectObject(mem_dc, old);
+  DeleteObject(dib_dst);
+  DeleteDC(mem_dc);
+  ReleaseDC(nullptr, screen_dc);
+  return true;
+}
+
 void ForceDwmIconicBitmaps(HWND hwnd) {
   if (!hwnd) return;
   // Best-effort: ask DWM to use iconic representation/bitmaps for this window.
@@ -295,21 +374,54 @@ bool CaptureWindowBgra(HWND hwnd, std::vector<uint8_t>& out, int& width, int& he
   return true;
 }
 
-bool CaptureWindowBgraScaled(HWND hwnd, int target_w, int target_h, std::vector<uint8_t>& out, int& width, int& height) {
+bool CaptureWindowBgraScaled(HWND hwnd,
+                             int target_w,
+                             int target_h,
+                             bool allow_restore_if_iconic,
+                             std::vector<uint8_t>& out,
+                             int& width,
+                             int& height) {
   RECT rc{};
   if (!GetWindowRect(hwnd, &rc)) return false;
-  const int src_w = rc.right - rc.left;
-  const int src_h = rc.bottom - rc.top;
+  int src_w = rc.right - rc.left;
+  int src_h = rc.bottom - rc.top;
   if (src_w <= 0 || src_h <= 0) return false;
 
   width = target_w > 0 ? target_w : src_w;
   height = target_h > 0 ? target_h : src_h;
   if (width <= 0 || height <= 0) return false;
 
-  if (IsIconic(hwnd)) {
+  const bool was_iconic = IsIconic(hwnd) ? true : false;
+  bool restored_from_iconic = false;
+
+  if (was_iconic) {
     ForceDwmIconicBitmaps(hwnd);
 
     // Thumbnail preview for minimized windows via DWM.
+    // Prefer live preview bitmap (often more "real" than the thumbnail/icon).
+    if (auto live_fn = ResolveDwmGetIconicLivePreviewBitmap()) {
+      HBITMAP hbmp_live = nullptr;
+      const HRESULT hr = live_fn(hwnd, &hbmp_live, nullptr, 0);
+      if (SUCCEEDED(hr) && hbmp_live) {
+        std::vector<uint8_t> tmp;
+        int bw = 0, bh = 0;
+        if (ReadHBitmapToBgra(hbmp_live, tmp, bw, bh)) {
+          DeleteObject(hbmp_live);
+          // Scale to requested size to keep payload small.
+          std::vector<uint8_t> scaled;
+          if (ScaleBgraToBgraGdi(tmp.data(), bw, bh, width, height, scaled)) {
+            out = std::move(scaled);
+            return true;
+          }
+          out = std::move(tmp);
+          width = bw;
+          height = bh;
+          return true;
+        }
+        DeleteObject(hbmp_live);
+      }
+    }
+
     HBITMAP hbmp = nullptr;
     const UINT tw = static_cast<UINT>(width);
     const UINT th = static_cast<UINT>(height);
@@ -331,8 +443,28 @@ bool CaptureWindowBgraScaled(HWND hwnd, int target_w, int target_h, std::vector<
         ForceDwmIconicBitmaps(hwnd);
       }
     }
-    // If DWM thumbnail isn't available, avoid restoring windows just for previews.
-    return false;
+    if (!allow_restore_if_iconic) {
+      // Avoid popping windows for non-selected tiles.
+      return false;
+    }
+
+    // Selected minimized window: briefly restore (no activate), capture, then minimize back.
+    ShowWindowAsync(hwnd, SW_SHOWNOACTIVATE);
+    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    DwmFlush();
+    Sleep(120);
+    restored_from_iconic = true;
+
+    // Re-read dimensions after restore (some apps report tiny rects while iconic).
+    RECT rc2{};
+    if (GetWindowRect(hwnd, &rc2)) {
+      const int w2 = rc2.right - rc2.left;
+      const int h2 = rc2.bottom - rc2.top;
+      if (w2 > 0 && h2 > 0) {
+        src_w = w2;
+        src_h = h2;
+      }
+    }
   }
 
   HDC screen_dc = GetDC(nullptr);
@@ -343,6 +475,7 @@ bool CaptureWindowBgraScaled(HWND hwnd, int target_w, int target_h, std::vector<
     if (mem_full) DeleteDC(mem_full);
     if (mem_thumb) DeleteDC(mem_thumb);
     ReleaseDC(nullptr, screen_dc);
+    if (restored_from_iconic) ShowWindowAsync(hwnd, SW_MINIMIZE);
     return false;
   }
 
@@ -362,6 +495,7 @@ bool CaptureWindowBgraScaled(HWND hwnd, int target_w, int target_h, std::vector<
     DeleteDC(mem_full);
     DeleteDC(mem_thumb);
     ReleaseDC(nullptr, screen_dc);
+    if (restored_from_iconic) ShowWindowAsync(hwnd, SW_MINIMIZE);
     return false;
   }
 
@@ -382,6 +516,7 @@ bool CaptureWindowBgraScaled(HWND hwnd, int target_w, int target_h, std::vector<
     DeleteDC(mem_full);
     DeleteDC(mem_thumb);
     ReleaseDC(nullptr, screen_dc);
+    if (restored_from_iconic) ShowWindowAsync(hwnd, SW_MINIMIZE);
     return false;
   }
 
@@ -406,6 +541,7 @@ bool CaptureWindowBgraScaled(HWND hwnd, int target_w, int target_h, std::vector<
     DeleteDC(mem_full);
     DeleteDC(mem_thumb);
     ReleaseDC(nullptr, screen_dc);
+    if (restored_from_iconic) ShowWindowAsync(hwnd, SW_MINIMIZE);
     return false;
   }
 
@@ -421,6 +557,7 @@ bool CaptureWindowBgraScaled(HWND hwnd, int target_w, int target_h, std::vector<
     DeleteDC(mem_full);
     DeleteDC(mem_thumb);
     ReleaseDC(nullptr, screen_dc);
+    if (restored_from_iconic) ShowWindowAsync(hwnd, SW_MINIMIZE);
     return false;
   }
 
@@ -435,6 +572,7 @@ bool CaptureWindowBgraScaled(HWND hwnd, int target_w, int target_h, std::vector<
   DeleteDC(mem_full);
   DeleteDC(mem_thumb);
   ReleaseDC(nullptr, screen_dc);
+  if (restored_from_iconic) ShowWindowAsync(hwnd, SW_MINIMIZE);
   return true;
 }
 
@@ -793,12 +931,17 @@ bool FlutterWindow::OnCreate() {
           int64_t hwnd_val = 0;
           int max_w = 320;
           int max_h = 200;
+          bool allow_restore = false;
           if (call.arguments() && std::holds_alternative<flutter::EncodableMap>(*call.arguments())) {
             const auto& args = std::get<flutter::EncodableMap>(*call.arguments());
             auto it = args.find(flutter::EncodableValue("hwnd"));
             if (it != args.end()) {
               if (std::holds_alternative<int64_t>(it->second)) hwnd_val = std::get<int64_t>(it->second);
               else if (std::holds_alternative<int32_t>(it->second)) hwnd_val = static_cast<int64_t>(std::get<int32_t>(it->second));
+            }
+            auto itr = args.find(flutter::EncodableValue("allowRestoreIfMinimized"));
+            if (itr != args.end() && std::holds_alternative<bool>(itr->second)) {
+              allow_restore = std::get<bool>(itr->second);
             }
             auto itw = args.find(flutter::EncodableValue("maxWidth"));
             if (itw != args.end()) {
@@ -838,7 +981,7 @@ bool FlutterWindow::OnCreate() {
 
           std::vector<uint8_t> bytes;
           int w = 0, h = 0;
-          const bool ok = CaptureWindowBgraScaled(target, tw, th, bytes, w, h);
+          const bool ok = CaptureWindowBgraScaled(target, tw, th, allow_restore, bytes, w, h);
           if (!ok) {
             result->Error("CAPTURE_FAILED", "Failed to capture window thumbnail.");
             return;

@@ -1352,44 +1352,55 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
         ? (_screenCaptureMonitorLabel?.isNotEmpty == true ? _screenCaptureMonitorLabel! : 'Choose screen…')
         : (_screenCaptureWindowTitle?.isNotEmpty == true ? _screenCaptureWindowTitle! : 'Choose window…');
 
-    return Tooltip(
-      message: 'Choose what to capture',
-      child: InkWell(
-        onTap: _showScreenCapturePicker,
+    // On desktop, InkWell hover/highlight paints on the nearest Material. If that Material
+    // is the whole conversation header, hover can visually overlap the "Ready" label.
+    // Give the pill its own clipped Material surface.
+    return SizedBox(
+      width: 220,
+      height: 28,
+      child: Material(
+        color: Colors.transparent,
+        clipBehavior: Clip.antiAlias,
         borderRadius: BorderRadius.circular(999),
-        child: Container(
-          height: 28,
-          padding: const EdgeInsets.symmetric(horizontal: 10),
+        child: Ink(
           decoration: BoxDecoration(
             color: Colors.black.withValues(alpha: 0.18),
             borderRadius: BorderRadius.circular(999),
             border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                _screenCaptureTarget == ScreenCaptureTarget.screen ? Icons.desktop_windows : Icons.crop_free,
-                size: 16,
-                color: Colors.white,
-              ),
-              const SizedBox(width: 6),
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 200),
-                child: Text(
-                  pillLabel,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
+          child: InkWell(
+            onTap: _showScreenCapturePicker,
+            hoverColor: Colors.white.withValues(alpha: 0.08),
+            highlightColor: Colors.white.withValues(alpha: 0.06),
+            splashColor: Colors.white.withValues(alpha: 0.10),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              child: Row(
+                mainAxisSize: MainAxisSize.max,
+                children: [
+                  Icon(
+                    _screenCaptureTarget == ScreenCaptureTarget.screen ? Icons.desktop_windows : Icons.crop_free,
+                    size: 16,
                     color: Colors.white,
                   ),
-                ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      pillLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  const Icon(Icons.arrow_drop_down, color: Colors.white, size: 18),
+                ],
               ),
-              const SizedBox(width: 4),
-              const Icon(Icons.arrow_drop_down, color: Colors.white, size: 18),
-            ],
+            ),
           ),
         ),
       ),
@@ -1404,7 +1415,11 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
         if (monitorId == null) {
           final monitors = await _listMonitors();
           if (monitors.isNotEmpty) {
-            final preferred = monitors.firstWhere((m) => m.isPrimary, orElse: () => monitors.first);
+            // Default capture target: Screen 1 (index == 1) if available.
+            final preferred = monitors.firstWhere(
+              (m) => m.index == 1,
+              orElse: () => monitors.reduce((a, b) => a.index <= b.index ? a : b),
+            );
             monitorId = preferred.id;
             await _setScreenCaptureMonitorSelection(monitorId: preferred.id, monitorLabel: preferred.label);
           }
@@ -3321,111 +3336,42 @@ class _ScreenCapturePickerDialogState extends State<_ScreenCapturePickerDialog> 
 
   Widget _windowTile(_ShareableWindowInfo w) {
     final selected = _target == ScreenCaptureTarget.window && _selectedHwnd == w.hwnd;
-    final key = 'w:${w.hwnd}';
-    final preview = _previews[key];
-    if (preview == null) {
-      // Fire-and-forget: load preview after build.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _ensurePreview(
-          key,
-          () => _MeetingPageEnhancedState._windowChannel.invokeMethod<dynamic>(
-            'captureWindowThumbnailPixels',
-            <String, dynamic>{'hwnd': w.hwnd, 'maxWidth': 360, 'maxHeight': 225},
-          ),
-        );
-      });
-    }
+    final cs = Theme.of(context).colorScheme;
 
-    return InkWell(
+    return ListTile(
+      dense: true,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+      leading: Icon(
+        w.isMinimized ? Icons.minimize : Icons.crop_free,
+        color: w.isMinimized ? cs.onSurface.withValues(alpha: 0.55) : cs.onSurface,
+        size: 18,
+      ),
+      title: Text(
+        w.title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+      ),
+      subtitle: w.isMinimized
+          ? Text(
+              'Minimized',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: cs.onSurface.withValues(alpha: 0.65),
+                  ),
+            )
+          : null,
+      trailing: selected ? Icon(Icons.check, color: cs.primary, size: 18) : null,
+      selected: selected,
+      selectedTileColor: cs.primary.withValues(alpha: 0.08),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       onTap: () {
         setState(() {
           _target = ScreenCaptureTarget.window;
           _selectedHwnd = w.hwnd;
         });
       },
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: selected ? Theme.of(context).colorScheme.primary : Theme.of(context).dividerColor,
-            width: selected ? 2 : 1,
-          ),
-          color: Theme.of(context).colorScheme.surface,
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            AspectRatio(
-              aspectRatio: 16 / 9,
-              child: ClipRRect(
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    if (preview != null)
-                      Container(
-                        color: Colors.black,
-                        alignment: Alignment.center,
-                        child: RawImage(image: preview, fit: BoxFit.contain),
-                      )
-                    else
-                      Container(
-                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                        child: Center(
-                          child: Icon(
-                            Icons.crop_free,
-                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
-                          ),
-                        ),
-                      ),
-                    if (selected)
-                      Align(
-                        alignment: Alignment.topRight,
-                        child: Padding(
-                          padding: const EdgeInsets.all(8),
-                          child: Container(
-                            padding: const EdgeInsets.all(6),
-                            decoration: BoxDecoration(
-                              color: Colors.black.withValues(alpha: 0.55),
-                              borderRadius: BorderRadius.circular(999),
-                            ),
-                            child: const Icon(Icons.check, color: Colors.white, size: 16),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(8),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      w.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                  if (w.isMinimized)
-                    Padding(
-                      padding: const EdgeInsets.only(left: 8),
-                      child: Text(
-                        'Min',
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                            ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 
@@ -3582,7 +3528,11 @@ class _ScreenCapturePickerDialogState extends State<_ScreenCapturePickerDialog> 
             final windows = (data['windows'] as List<_ShareableWindowInfo>?) ?? const <_ShareableWindowInfo>[];
 
             if (_selectedMonitorId == null && monitors.isNotEmpty) {
-              final preferred = monitors.firstWhere((m) => m.isPrimary, orElse: () => monitors.first);
+              // Default to "Screen 1" for sharing (matches label "Screen 1").
+              final preferred = monitors.firstWhere(
+                (m) => m.index == 1,
+                orElse: () => monitors.reduce((a, b) => a.index <= b.index ? a : b),
+              );
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 if (!mounted) return;
                 if (_selectedMonitorId != null) return;
@@ -3644,13 +3594,7 @@ class _ScreenCapturePickerDialogState extends State<_ScreenCapturePickerDialog> 
                     ),
                   )
                 else
-                  SliverGrid(
-                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 2,
-                      crossAxisSpacing: 12,
-                      mainAxisSpacing: 12,
-                      childAspectRatio: 1.25,
-                    ),
+                  SliverList(
                     delegate: SliverChildBuilderDelegate(
                       (context, i) => _windowTile(windows[i]),
                       childCount: windows.length,
