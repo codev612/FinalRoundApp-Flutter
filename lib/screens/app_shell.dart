@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -74,13 +73,17 @@ class _AppShellState extends State<AppShell> with WindowListener {
 
   @override
   Widget build(BuildContext context) {
-    return Consumer2<AuthProvider, MeetingProvider>(
-      builder: (context, authProvider, meetingProvider, _) {
+    return Consumer3<AuthProvider, MeetingProvider, SpeechToTextProvider>(
+      builder: (context, authProvider, meetingProvider, speechProvider, _) {
         final isAuthenticated = authProvider.isAuthenticated;
         
         // Update auth token whenever auth state changes
         if (isAuthenticated) {
           meetingProvider.updateAuthToken(authProvider.token);
+          speechProvider.updateAuthToken(authProvider.token);
+          speechProvider.setOnAuthInvalidated(() async {
+            await authProvider.signOut();
+          });
         }
         
         // Show signin page if not authenticated

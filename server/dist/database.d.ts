@@ -86,6 +86,50 @@ export interface QuestionTemplatesDoc {
     userId: string;
     templates: QuestionTemplateEntry[];
 }
+export interface AuthSession {
+    _id?: ObjectId;
+    id?: string;
+    userId: string;
+    createdAt: Date;
+    lastSeenAt: Date;
+    clientType: 'web' | 'desktop' | 'mobile' | 'unknown';
+    platform: 'windows' | 'mac' | 'linux' | 'android' | 'ios' | 'unknown';
+    deviceId?: string | null;
+    locationKey?: string | null;
+    userAgent: string;
+    ip: string;
+    revokedAt: Date | null;
+}
+export interface TrustedDevice {
+    _id?: ObjectId;
+    id?: string;
+    userId: string;
+    deviceId: string;
+    firstSeenAt: Date;
+    lastSeenAt: Date;
+    lastLocationKey: string | null;
+    lastIp: string | null;
+    lastUserAgent: string | null;
+    clientType: AuthSession['clientType'];
+    platform: AuthSession['platform'];
+}
+export interface LoginChallenge {
+    _id?: ObjectId;
+    id?: string;
+    userId: string;
+    email: string;
+    code: string;
+    createdAt: Date;
+    expiresAt: Date;
+    usedAt: Date | null;
+    attempts: number;
+    deviceId: string;
+    locationKey: string | null;
+    clientType: AuthSession['clientType'];
+    platform: AuthSession['platform'];
+    userAgent: string;
+    ip: string;
+}
 export declare const connectDB: () => Promise<void>;
 export declare const getSessionsCollection: () => Collection<MeetingSession>;
 export declare const generateToken: () => string;
@@ -134,6 +178,43 @@ export declare const getQuestionTemplates: (userId: string) => Promise<QuestionT
 export declare const saveQuestionTemplates: (userId: string, templates: QuestionTemplateEntry[]) => Promise<void>;
 export declare const deleteQuestionTemplate: (userId: string, templateId: string) => Promise<void>;
 export declare const closeDB: () => Promise<void>;
+export declare const createAuthSession: (userId: string, clientType: AuthSession["clientType"], platform: AuthSession["platform"], userAgent: string, ip: string, deviceId?: string | null, locationKey?: string | null) => Promise<string>;
+export declare const touchAuthSession: (userId: string, sessionId: string) => Promise<boolean>;
+export declare const validateAuthSessionAndMaybeTouch: (userId: string, sessionId: string, minTouchMs?: number) => Promise<boolean>;
+export declare const countAuthSessions: (userId: string) => Promise<number>;
+export declare const listAuthSessions: (userId: string, opts?: {
+    limit?: number;
+    skip?: number;
+}) => Promise<AuthSession[]>;
+export declare const revokeAuthSession: (userId: string, sessionId: string) => Promise<boolean>;
+export declare const revokeOtherAuthSessions: (userId: string, keepSessionId: string | null) => Promise<number>;
+export declare const getTrustedDevice: (userId: string, deviceId: string) => Promise<TrustedDevice | null>;
+export declare const countTrustedDevices: (userId: string) => Promise<number>;
+export declare const upsertTrustedDeviceOnLogin: (params: {
+    userId: string;
+    deviceId: string;
+    clientType: AuthSession["clientType"];
+    platform: AuthSession["platform"];
+    locationKey: string | null;
+    ip: string;
+    userAgent: string;
+}) => Promise<void>;
+export declare const createLoginChallenge: (params: {
+    userId: string;
+    email: string;
+    deviceId: string;
+    locationKey: string | null;
+    clientType: AuthSession["clientType"];
+    platform: AuthSession["platform"];
+    userAgent: string;
+    ip: string;
+    code: string;
+    expiresAt: Date;
+}) => Promise<LoginChallenge>;
+export declare const getLoginChallengeById: (id: string) => Promise<LoginChallenge | null>;
+export declare const incrementLoginChallengeAttempts: (id: string) => Promise<void>;
+export declare const markLoginChallengeUsed: (id: string) => Promise<void>;
+export declare const deleteUserAccount: (userId: string) => Promise<void>;
 export interface ApiUsage {
     _id?: ObjectId;
     userId: string;
@@ -168,6 +249,11 @@ export declare const getUserApiUsageStats: (userId: string, startDate?: Date, en
 }>;
 export declare const getUserDailyAiTokenUsage: (userId: string, startDate: Date, endDate: Date) => Promise<Array<{
     date: string;
+    tokens: number;
+}>>;
+export declare const getUserDailyAiTokenUsageByModel: (userId: string, startDate: Date, endDate: Date) => Promise<Array<{
+    date: string;
+    model: string;
     tokens: number;
 }>>;
 export interface TranscriptionUsage {

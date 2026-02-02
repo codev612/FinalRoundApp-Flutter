@@ -123,6 +123,54 @@ export interface QuestionTemplatesDoc {
   templates: QuestionTemplateEntry[];
 }
 
+export interface AuthSession {
+  _id?: ObjectId;
+  id?: string; // _id.toString()
+  userId: string;
+  createdAt: Date;
+  lastSeenAt: Date;
+  clientType: 'web' | 'desktop' | 'mobile' | 'unknown';
+  platform: 'windows' | 'mac' | 'linux' | 'android' | 'ios' | 'unknown';
+  deviceId?: string | null;
+  locationKey?: string | null;
+  userAgent: string;
+  ip: string;
+  revokedAt: Date | null;
+}
+
+export interface TrustedDevice {
+  _id?: ObjectId;
+  id?: string;
+  userId: string;
+  deviceId: string;
+  firstSeenAt: Date;
+  lastSeenAt: Date;
+  lastLocationKey: string | null;
+  lastIp: string | null;
+  lastUserAgent: string | null;
+  clientType: AuthSession['clientType'];
+  platform: AuthSession['platform'];
+}
+
+export interface LoginChallenge {
+  _id?: ObjectId;
+  id?: string;
+  userId: string;
+  email: string;
+  code: string;
+  createdAt: Date;
+  expiresAt: Date;
+  usedAt: Date | null;
+  attempts: number;
+  // Context for the pending sign-in
+  deviceId: string;
+  locationKey: string | null;
+  clientType: AuthSession['clientType'];
+  platform: AuthSession['platform'];
+  userAgent: string;
+  ip: string;
+}
+
 let client: MongoClient | null = null;
 let db: Db | null = null;
 let usersCollection: Collection<User> | null = null;
@@ -130,6 +178,9 @@ let sessionsCollection: Collection<MeetingSession> | null = null;
 let modeConfigsCollection: Collection<ModeConfigsDoc> | null = null;
 let customModesCollection: Collection<CustomModesDoc> | null = null;
 let questionTemplatesCollection: Collection<QuestionTemplatesDoc> | null = null;
+let authSessionsCollection: Collection<AuthSession> | null = null;
+let trustedDevicesCollection: Collection<TrustedDevice> | null = null;
+let loginChallengesCollection: Collection<LoginChallenge> | null = null;
 
 // Initialize MongoDB connection
 export const connectDB = async (): Promise<void> => {
@@ -185,6 +236,25 @@ export const connectDB = async (): Promise<void> => {
       await questionTemplatesCollection.createIndex({ userId: 1 }, { unique: true });
     }
 
+    if (!authSessionsCollection) {
+      authSessionsCollection = db.collection<AuthSession>('auth_sessions');
+      await authSessionsCollection.createIndex({ userId: 1, revokedAt: 1, lastSeenAt: -1 });
+      await authSessionsCollection.createIndex({ userId: 1, createdAt: -1 });
+    }
+
+    if (!trustedDevicesCollection) {
+      trustedDevicesCollection = db.collection<TrustedDevice>('trusted_devices');
+      await trustedDevicesCollection.createIndex({ userId: 1, deviceId: 1 }, { unique: true });
+      await trustedDevicesCollection.createIndex({ userId: 1, lastSeenAt: -1 });
+    }
+
+    if (!loginChallengesCollection) {
+      loginChallengesCollection = db.collection<LoginChallenge>('login_challenges');
+      await loginChallengesCollection.createIndex({ userId: 1, createdAt: -1 });
+      await loginChallengesCollection.createIndex({ expiresAt: 1 });
+      await loginChallengesCollection.createIndex({ usedAt: 1 });
+    }
+
     // Usage tracking collections (indexes only; collection handles are created on demand)
     try {
       await db.collection('api_usage').createIndex({ userId: 1, timestamp: -1 });
@@ -233,6 +303,27 @@ const getQuestionTemplatesCollection = (): Collection<QuestionTemplatesDoc> => {
     throw new Error('Database not connected. Call connectDB() first.');
   }
   return questionTemplatesCollection;
+};
+
+const getAuthSessionsCollection = (): Collection<AuthSession> => {
+  if (!authSessionsCollection) {
+    throw new Error('Database not connected. Call connectDB() first.');
+  }
+  return authSessionsCollection;
+};
+
+const getTrustedDevicesCollection = (): Collection<TrustedDevice> => {
+  if (!trustedDevicesCollection) {
+    throw new Error('Database not connected. Call connectDB() first.');
+  }
+  return trustedDevicesCollection;
+};
+
+const getLoginChallengesCollection = (): Collection<LoginChallenge> => {
+  if (!loginChallengesCollection) {
+    throw new Error('Database not connected. Call connectDB() first.');
+  }
+  return loginChallengesCollection;
 };
 
 // Helper function to convert MongoDB user to API format
@@ -900,8 +991,276 @@ export const closeDB = async (): Promise<void> => {
     modeConfigsCollection = null;
     customModesCollection = null;
     questionTemplatesCollection = null;
+    authSessionsCollection = null;
+    trustedDevicesCollection = null;
+    loginChallengesCollection = null;
     console.log('MongoDB connection closed');
   }
+};
+
+// Auth sessions (web/app sign-ins)
+const toAuthSession = (doc: AuthSession | null): AuthSession | undefined => {
+  if (!doc) return undefined;
+  return { ...doc, id: doc._id?.toString() };
+};
+
+export const createAuthSession = async (
+  userId: string,
+  clientType: AuthSession['clientType'],
+  platform: AuthSession['platform'],
+  userAgent: string,
+  ip: string,
+  deviceId?: string | null,
+  locationKey?: string | null
+): Promise<string> => {
+  await connectDB();
+  const collection = getAuthSessionsCollection();
+  const now = new Date();
+  const doc: Omit<AuthSession, '_id' | 'id'> = {
+    userId,
+    createdAt: now,
+    lastSeenAt: now,
+    clientType,
+    platform,
+    deviceId: deviceId ?? null,
+    locationKey: locationKey ?? null,
+    userAgent: String(userAgent || ''),
+    ip: String(ip || ''),
+    revokedAt: null,
+  };
+  const result = await collection.insertOne(doc as any);
+  return result.insertedId.toString();
+};
+
+export const touchAuthSession = async (userId: string, sessionId: string): Promise<boolean> => {
+  await connectDB();
+  const collection = getAuthSessionsCollection();
+  if (!ObjectId.isValid(sessionId)) return false;
+  const _id = new ObjectId(sessionId);
+  const res = await collection.updateOne(
+    { _id, userId, revokedAt: null },
+    { $set: { lastSeenAt: new Date() } },
+  );
+  return res.matchedCount > 0;
+};
+
+// Validate that a session exists and is not revoked.
+// Also updates lastSeenAt at most once per minTouchMs to avoid write-amplification.
+export const validateAuthSessionAndMaybeTouch = async (
+  userId: string,
+  sessionId: string,
+  minTouchMs: number = 60_000
+): Promise<boolean> => {
+  await connectDB();
+  const collection = getAuthSessionsCollection();
+  if (!ObjectId.isValid(sessionId)) return false;
+  const _id = new ObjectId(sessionId);
+
+  const doc = await collection.findOne(
+    { _id, userId, revokedAt: null },
+    { projection: { lastSeenAt: 1 } }
+  );
+  if (!doc) return false;
+
+  const lastSeen = doc.lastSeenAt instanceof Date ? doc.lastSeenAt : null;
+  const now = new Date();
+  const shouldTouch = !lastSeen || (now.getTime() - lastSeen.getTime() >= minTouchMs);
+  if (shouldTouch) {
+    try {
+      await collection.updateOne(
+        { _id, userId, revokedAt: null },
+        { $set: { lastSeenAt: now } },
+      );
+    } catch (_) {}
+  }
+
+  return true;
+};
+
+export const countAuthSessions = async (userId: string): Promise<number> => {
+  await connectDB();
+  const collection = getAuthSessionsCollection();
+  return await collection.countDocuments({ userId });
+};
+
+export const listAuthSessions = async (
+  userId: string,
+  opts?: { limit?: number; skip?: number }
+): Promise<AuthSession[]> => {
+  await connectDB();
+  const collection = getAuthSessionsCollection();
+  const rawLimit = typeof opts?.limit === 'number' ? opts!.limit! : 50;
+  const rawSkip = typeof opts?.skip === 'number' ? opts!.skip! : 0;
+  const limit = Math.max(1, Math.min(200, Math.floor(rawLimit)));
+  const skip = Math.max(0, Math.floor(rawSkip));
+
+  const rows = await collection
+    .find({ userId })
+    .sort({ lastSeenAt: -1, createdAt: -1 })
+    .skip(skip)
+    .limit(limit)
+    .toArray();
+  return rows.map((r) => toAuthSession(r)!).filter(Boolean);
+};
+
+export const revokeAuthSession = async (userId: string, sessionId: string): Promise<boolean> => {
+  await connectDB();
+  const collection = getAuthSessionsCollection();
+  if (!ObjectId.isValid(sessionId)) return false;
+  const _id = new ObjectId(sessionId);
+  const res = await collection.updateOne(
+    { _id, userId, revokedAt: null },
+    { $set: { revokedAt: new Date() } },
+  );
+  return res.matchedCount > 0;
+};
+
+export const revokeOtherAuthSessions = async (userId: string, keepSessionId: string | null): Promise<number> => {
+  await connectDB();
+  const collection = getAuthSessionsCollection();
+  const filter: any = { userId, revokedAt: null };
+  if (keepSessionId && ObjectId.isValid(keepSessionId)) {
+    filter._id = { $ne: new ObjectId(keepSessionId) };
+  }
+  const res = await collection.updateMany(filter, { $set: { revokedAt: new Date() } });
+  return res.modifiedCount ?? 0;
+};
+
+const toTrustedDevice = (doc: TrustedDevice | null): TrustedDevice | undefined => {
+  if (!doc) return undefined;
+  return { ...doc, id: doc._id?.toString() };
+};
+
+export const getTrustedDevice = async (userId: string, deviceId: string): Promise<TrustedDevice | null> => {
+  await connectDB();
+  const col = getTrustedDevicesCollection();
+  const doc = await col.findOne({ userId, deviceId: String(deviceId) });
+  return doc ? (toTrustedDevice(doc) as TrustedDevice) : null;
+};
+
+export const countTrustedDevices = async (userId: string): Promise<number> => {
+  await connectDB();
+  const col = getTrustedDevicesCollection();
+  return await col.countDocuments({ userId });
+};
+
+export const upsertTrustedDeviceOnLogin = async (params: {
+  userId: string;
+  deviceId: string;
+  clientType: AuthSession['clientType'];
+  platform: AuthSession['platform'];
+  locationKey: string | null;
+  ip: string;
+  userAgent: string;
+}): Promise<void> => {
+  await connectDB();
+  const col = getTrustedDevicesCollection();
+  const now = new Date();
+  await col.updateOne(
+    { userId: params.userId, deviceId: String(params.deviceId) },
+    {
+      $setOnInsert: {
+        userId: params.userId,
+        deviceId: String(params.deviceId),
+        firstSeenAt: now,
+      },
+      $set: {
+        lastSeenAt: now,
+        lastLocationKey: params.locationKey ?? null,
+        lastIp: String(params.ip || '') || null,
+        lastUserAgent: String(params.userAgent || '') || null,
+        clientType: params.clientType,
+        platform: params.platform,
+      },
+    },
+    { upsert: true }
+  );
+};
+
+const toLoginChallenge = (doc: LoginChallenge | null): LoginChallenge | undefined => {
+  if (!doc) return undefined;
+  return { ...doc, id: doc._id?.toString() };
+};
+
+export const createLoginChallenge = async (params: {
+  userId: string;
+  email: string;
+  deviceId: string;
+  locationKey: string | null;
+  clientType: AuthSession['clientType'];
+  platform: AuthSession['platform'];
+  userAgent: string;
+  ip: string;
+  code: string;
+  expiresAt: Date;
+}): Promise<LoginChallenge> => {
+  await connectDB();
+  const col = getLoginChallengesCollection();
+  const now = new Date();
+  const doc: Omit<LoginChallenge, '_id' | 'id'> = {
+    userId: params.userId,
+    email: params.email,
+    code: params.code,
+    createdAt: now,
+    expiresAt: params.expiresAt,
+    usedAt: null,
+    attempts: 0,
+    deviceId: String(params.deviceId),
+    locationKey: params.locationKey ?? null,
+    clientType: params.clientType,
+    platform: params.platform,
+    userAgent: String(params.userAgent || ''),
+    ip: String(params.ip || ''),
+  };
+  const result = await col.insertOne(doc as any);
+  const saved = await col.findOne({ _id: result.insertedId });
+  return toLoginChallenge(saved as any)! as LoginChallenge;
+};
+
+export const getLoginChallengeById = async (id: string): Promise<LoginChallenge | null> => {
+  await connectDB();
+  const col = getLoginChallengesCollection();
+  if (!ObjectId.isValid(id)) return null;
+  const doc = await col.findOne({ _id: new ObjectId(id) } as any);
+  return doc ? (toLoginChallenge(doc) as LoginChallenge) : null;
+};
+
+export const incrementLoginChallengeAttempts = async (id: string): Promise<void> => {
+  await connectDB();
+  const col = getLoginChallengesCollection();
+  if (!ObjectId.isValid(id)) return;
+  await col.updateOne({ _id: new ObjectId(id) } as any, { $inc: { attempts: 1 } });
+};
+
+export const markLoginChallengeUsed = async (id: string): Promise<void> => {
+  await connectDB();
+  const col = getLoginChallengesCollection();
+  if (!ObjectId.isValid(id)) return;
+  await col.updateOne({ _id: new ObjectId(id) } as any, { $set: { usedAt: new Date() } });
+};
+
+export const deleteUserAccount = async (userId: string): Promise<void> => {
+  await connectDB();
+  const currentDb = db;
+  if (!currentDb) throw new Error('Database not connected');
+
+  // Delete user record (ObjectId key) + all userId-keyed related docs.
+  if (ObjectId.isValid(userId)) {
+    await getUsersCollection().deleteOne({ _id: new ObjectId(userId) } as any);
+  } else {
+    // Fall back (shouldn't happen) - remove any user doc with matching id string.
+    await getUsersCollection().deleteMany({ id: userId } as any);
+  }
+
+  await currentDb.collection('meeting_sessions').deleteMany({ userId });
+  await currentDb.collection('mode_configs').deleteMany({ userId });
+  await currentDb.collection('custom_modes').deleteMany({ userId });
+  await currentDb.collection('question_templates').deleteMany({ userId });
+  await currentDb.collection('auth_sessions').deleteMany({ userId });
+  await currentDb.collection('trusted_devices').deleteMany({ userId });
+  await currentDb.collection('login_challenges').deleteMany({ userId });
+  await currentDb.collection('api_usage').deleteMany({ userId });
+  await currentDb.collection('transcription_usage').deleteMany({ userId });
 };
 
 // API Usage Tracking
@@ -1049,6 +1408,53 @@ export const getUserDailyAiTokenUsage = async (
 
   const rows = await collection.aggregate(pipeline).toArray();
   return rows.map((r: any) => ({ date: String(r._id), tokens: Number(r.tokens ?? 0) }));
+};
+
+export const getUserDailyAiTokenUsageByModel = async (
+  userId: string,
+  startDate: Date,
+  endDate: Date
+): Promise<Array<{ date: string; model: string; tokens: number }>> => {
+  await connectDB();
+  const currentDb = db;
+  if (!currentDb) throw new Error('Database not connected');
+  const collection = getApiUsageCollection(currentDb);
+
+  const pipeline: any[] = [
+    {
+      $match: {
+        userId,
+        timestamp: { $gte: startDate, $lte: endDate },
+      },
+    },
+    {
+      $project: {
+        day: {
+          $dateToString: {
+            format: '%Y-%m-%d',
+            date: '$timestamp',
+            timezone: 'UTC',
+          },
+        },
+        model: 1,
+        totalTokens: 1,
+      },
+    },
+    {
+      $group: {
+        _id: { day: '$day', model: '$model' },
+        tokens: { $sum: '$totalTokens' },
+      },
+    },
+    { $sort: { '_id.day': 1, '_id.model': 1 } },
+  ];
+
+  const rows = await collection.aggregate(pipeline).toArray();
+  return rows.map((r: any) => ({
+    date: String(r?._id?.day ?? ''),
+    model: String(r?._id?.model ?? ''),
+    tokens: Number(r.tokens ?? 0),
+  }));
 };
 
 // Transcription usage tracking (for pricing tiers / minute limits)

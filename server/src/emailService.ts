@@ -303,3 +303,68 @@ export const sendProfileChangeAlert = async (
     return false;
   }
 };
+
+// Send login security code email (new device/location)
+export const sendLoginSecurityCodeEmail = async (email: string, code: string): Promise<boolean> => {
+  if (!mg || !MAILGUN_API_KEY || !DOMAIN) {
+    return false;
+  }
+
+  const messageData = {
+    from: FROM_EMAIL,
+    to: email,
+    subject: 'FinalRound security code',
+    html: `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .code-box {
+              display: inline-block;
+              padding: 16px 24px;
+              background-color: #f5f5f5;
+              border: 2px solid #8b5cf6;
+              border-radius: 10px;
+              font-size: 28px;
+              font-weight: 900;
+              letter-spacing: 6px;
+              margin: 16px 0;
+              font-family: monospace;
+              color: #4c1d95;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <h1>Security check</h1>
+            <p>We detected a new device or a location change. Use this code to finish signing in:</p>
+            <div class="code-box">${code}</div>
+            <p>This code expires in 10 minutes.</p>
+            <p>If you didn’t try to sign in, you should change your password.</p>
+          </div>
+        </body>
+      </html>
+    `,
+    text: `
+Security check
+
+We detected a new device or a location change. Use this code to finish signing in:
+
+${code}
+
+This code expires in 10 minutes.
+If you didn’t try to sign in, you should change your password.
+    `,
+  };
+
+  try {
+    await mg.messages.create(DOMAIN, messageData as any);
+    console.log(`✓ Login security code sent to ${email}`);
+    return true;
+  } catch (error: any) {
+    console.error('✗ Error sending login security code:', error);
+    return false;
+  }
+};

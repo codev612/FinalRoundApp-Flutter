@@ -9,6 +9,7 @@ import { Socket } from 'net';
 import authRoutes from './routes/auth.js';
 import { authenticate, verifyToken, AuthRequest, JWTPayload } from './auth.js';
 import { AuthenticatedWebSocket } from './types.js';
+import { registerWebSocketForSession } from './sessionBus.js';
 import {
   connectDB,
   closeDB,
@@ -29,9 +30,11 @@ import {
   getUserApiUsage,
   getUserApiUsageStats,
   getUserDailyAiTokenUsage,
+  getUserDailyAiTokenUsageByModel,
   getUserByIdFull,
   saveTranscriptionUsage,
   getTranscriptionUsageMsForPeriod,
+  validateAuthSessionAndMaybeTouch,
   MeetingSession,
 } from './database.js';
 import { fileURLToPath } from 'url';
@@ -94,6 +97,7 @@ app.get('/auth/signin', servePublicHtml('auth/signin.html'));
 app.get('/auth/signup', servePublicHtml('auth/signup.html'));
 app.get('/auth/forgot-password', servePublicHtml('auth/forgot-password.html'));
 app.get('/auth/reset-password', servePublicHtml('auth/reset-password.html'));
+app.get('/auth/security-check', servePublicHtml('auth/security-check.html'));
 
 // Health check endpoint
 app.get('/health', (_req: Request, res: Response) => {
@@ -646,6 +650,120 @@ app.get('/api/billing/ai-daily-tokens', authenticate, async (req: AuthRequest, r
   }
 });
 
+app.get('/api/billing/ai-daily-tokens-by-model', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const { start, end } = getCurrentBillingPeriodUtc();
+
+    const parseYmdToUtcDayStart = (s: string): Date | null => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s.trim());
+      if (!m) return null;
+      const y = parseInt(m[1], 10);
+      const mo = parseInt(m[2], 10);
+      const d = parseInt(m[3], 10);
+      if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) return null;
+      if (mo < 1 || mo > 12) return null;
+      if (d < 1 || d > 31) return null;
+      const dt = new Date(Date.UTC(y, mo - 1, d, 0, 0, 0, 0));
+      if (dt.getUTCFullYear() !== y || (dt.getUTCMonth() + 1) !== mo || dt.getUTCDate() !== d) return null;
+      return dt;
+    };
+
+    const startParam = req.query?.start;
+    const endParam = req.query?.end;
+    const startStr = typeof startParam === 'string' ? startParam : null;
+    const endStr = typeof endParam === 'string' ? endParam : null;
+    const customStartDayUtc = startStr ? parseYmdToUtcDayStart(startStr) : null;
+    const customEndDayUtc = endStr ? parseYmdToUtcDayStart(endStr) : null;
+    if (!customStartDayUtc || !customEndDayUtc || customStartDayUtc > customEndDayUtc) {
+      return res.status(400).json({ error: 'start and end (YYYY-MM-DD) are required' });
+    }
+
+    const now = new Date();
+    const endInclusive = new Date(Date.UTC(
+      customEndDayUtc.getUTCFullYear(),
+      customEndDayUtc.getUTCMonth(),
+      customEndDayUtc.getUTCDate(),
+      23, 59, 59, 999,
+    ));
+    const queryEnd = new Date(Math.min(now.getTime(), endInclusive.getTime()));
+
+    const rows = await getUserDailyAiTokenUsageByModel(userId, customStartDayUtc, queryEnd);
+
+    // Build model set + totals.
+    const totalsByModel = new Map<string, number>();
+    for (const r of rows) {
+      const model = r.model || 'unknown';
+      totalsByModel.set(model, (totalsByModel.get(model) ?? 0) + (r.tokens ?? 0));
+    }
+    const models = Array.from(totalsByModel.entries())
+      .sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]))
+      .map(([m]) => m);
+
+    // Index by day -> model -> tokens
+    const byDay = new Map<string, Map<string, number>>();
+    for (const r of rows) {
+      const day = r.date;
+      if (!day) continue;
+      const model = r.model || 'unknown';
+      let m = byDay.get(day);
+      if (!m) {
+        m = new Map<string, number>();
+        byDay.set(day, m);
+      }
+      m.set(model, (m.get(model) ?? 0) + (r.tokens ?? 0));
+    }
+
+    const days: Array<{ date: string; totalTokens: number; byModel: Record<string, number> }> = [];
+    const cur = new Date(Date.UTC(
+      customStartDayUtc.getUTCFullYear(),
+      customStartDayUtc.getUTCMonth(),
+      customStartDayUtc.getUTCDate(),
+      0, 0, 0, 0,
+    ));
+    const endDay = new Date(Date.UTC(
+      customEndDayUtc.getUTCFullYear(),
+      customEndDayUtc.getUTCMonth(),
+      customEndDayUtc.getUTCDate(),
+      0, 0, 0, 0,
+    ));
+    while (cur <= endDay) {
+      const y = cur.getUTCFullYear();
+      const m2 = String(cur.getUTCMonth() + 1).padStart(2, '0');
+      const d2 = String(cur.getUTCDate()).padStart(2, '0');
+      const key = `${y}-${m2}-${d2}`;
+      const modelMap = byDay.get(key);
+      const byModelObj: Record<string, number> = {};
+      let totalTokens = 0;
+      for (const model of models) {
+        const v = modelMap?.get(model) ?? 0;
+        byModelObj[model] = v;
+        totalTokens += v;
+      }
+      days.push({ date: key, totalTokens, byModel: byModelObj });
+      cur.setUTCDate(cur.getUTCDate() + 1);
+    }
+
+    const totalTokens = days.reduce((sum, d) => sum + (d.totalTokens || 0), 0);
+    const totalsByModelObj: Record<string, number> = {};
+    for (const model of models) {
+      totalsByModelObj[model] = totalsByModel.get(model) ?? 0;
+    }
+
+    return res.json({
+      billingPeriod: { start: start.toISOString(), end: end.toISOString() },
+      range: { start: customStartDayUtc.toISOString(), end: customEndDayUtc.toISOString(), custom: { start: startStr, end: endStr } },
+      models,
+      totalsByModel: totalsByModelObj,
+      totalTokens,
+      days,
+    });
+  } catch (error: any) {
+    console.error('Error fetching daily AI token usage by model:', error);
+    return res.status(500).json({ error: error.message || 'Failed to fetch daily AI token usage by model' });
+  }
+});
+
 app.post('/api/billing/transcription-usage', authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.userId;
@@ -1153,7 +1271,7 @@ interface AuthenticatedIncomingMessage extends IncomingMessage {
   user?: JWTPayload;
 }
 
-server.on('upgrade', (req: AuthenticatedIncomingMessage, socket: Socket, head: Buffer) => {
+server.on('upgrade', async (req: AuthenticatedIncomingMessage, socket: Socket, head: Buffer) => {
   try {
     if (!req.url || !req.headers.host) {
       socket.destroy();
@@ -1174,6 +1292,15 @@ server.on('upgrade', (req: AuthenticatedIncomingMessage, socket: Socket, head: B
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
         socket.destroy();
         return;
+      }
+      const sid = (decoded as any)?.sid;
+      if (typeof sid === 'string' && sid.length > 0) {
+        const ok = await validateAuthSessionAndMaybeTouch(decoded.userId, sid, 60_000);
+        if (!ok) {
+          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+          socket.destroy();
+          return;
+        }
       }
       req.user = decoded;
     } else {
@@ -1213,6 +1340,14 @@ const deepgram = createClient(process.env.DEEPGRAM_API_KEY || '');
 
 wss.on('connection', (ws: WebSocket) => {
   console.log('Client connected');
+
+  {
+    const authWs = ws as AuthenticatedWebSocket;
+    const sid = (authWs.user as any)?.sid;
+    if (typeof sid === 'string' && sid.length > 0) {
+      registerWebSocketForSession(sid, ws);
+    }
+  }
 
   let deepgramMic: any = null;
   let deepgramSystem: any = null;
@@ -1444,6 +1579,14 @@ wss.on('connection', (ws: WebSocket) => {
 // AI WebSocket server (streams tokens to the client)
 aiWss.on('connection', (ws: WebSocket) => {
   console.log('AI client connected');
+
+  {
+    const authWs = ws as AuthenticatedWebSocket;
+    const sid = (authWs.user as any)?.sid;
+    if (typeof sid === 'string' && sid.length > 0) {
+      registerWebSocketForSession(sid, ws);
+    }
+  }
 
   // Only allow one in-flight request per socket for simplicity.
   let currentRequestId: string | null = null;

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 class TranscriptionService {
@@ -11,6 +12,7 @@ class TranscriptionService {
 
   final String serverUrl;
   String? _authToken;
+  VoidCallback? _onSessionRevoked;
   final StreamController<TranscriptionResult> _transcriptController =
       StreamController<TranscriptionResult>.broadcast();
 
@@ -18,6 +20,10 @@ class TranscriptionService {
 
   void setAuthToken(String? token) {
     _authToken = token;
+  }
+
+  void setOnSessionRevoked(VoidCallback? cb) {
+    _onSessionRevoked = cb;
   }
 
   Stream<TranscriptionResult> get transcriptStream => _transcriptController.stream;
@@ -62,6 +68,16 @@ class TranscriptionService {
                 confidence: data['confidence']?.toDouble() ?? 0.0,
               ),
             );
+            return;
+          }
+
+          if (data['type'] == 'session_revoked') {
+            // Force sign-out flow in the app.
+            _transcriptController.addError('Session revoked');
+            try {
+              _onSessionRevoked?.call();
+            } catch (_) {}
+            disconnect();
             return;
           }
 

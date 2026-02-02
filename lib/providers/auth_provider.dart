@@ -2,6 +2,9 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:async';
+import 'dart:io' show Platform;
+import 'dart:math' as math;
 import '../config/app_config.dart';
 
 class AuthProvider extends ChangeNotifier {
@@ -11,6 +14,12 @@ class AuthProvider extends ChangeNotifier {
   bool? _emailVerified;
   bool _isLoading = false;
   String? _errorMessage;
+  Timer? _sessionWatchdog;
+  bool _watchdogInFlight = false;
+  final math.Random _jitter = math.Random();
+  String? _pendingLoginChallengeId;
+  bool get requiresSecurityCheck => _pendingLoginChallengeId != null && _pendingLoginChallengeId!.isNotEmpty;
+  String? get pendingLoginChallengeId => _pendingLoginChallengeId;
 
   String? get token => _token;
   String? get userEmail => _userEmail;
@@ -26,16 +35,28 @@ class AuthProvider extends ChangeNotifier {
     _loadToken();
   }
 
+  @override
+  void dispose() {
+    _stopSessionWatchdog();
+    super.dispose();
+  }
+
   Future<void> _loadToken() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       _token = prefs.getString('auth_token');
       _userEmail = prefs.getString('user_email');
       if (_token != null && _token!.isNotEmpty) {
-        // Verify token is still valid by checking with server
-        final isValid = await _verifyToken();
-        if (!isValid) {
+        // Verify token is still valid by checking with server. If server is temporarily
+        // unreachable, keep the token and re-check later (watchdog).
+        final status = await _checkToken();
+        if (status == _TokenCheck.invalid) {
           await _clearAuth();
+        } else if (status == _TokenCheck.valid) {
+          _startSessionWatchdog();
+        } else {
+          // unknown (e.g. offline): keep token and watch for revoke later
+          _startSessionWatchdog();
         }
       }
       notifyListeners();
@@ -44,8 +65,8 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
-  Future<bool> _verifyToken() async {
-    if (_token == null) return false;
+  Future<_TokenCheck> _checkToken() async {
+    if (_token == null) return _TokenCheck.invalid;
     
     try {
       final uri = Uri.parse(AppConfig.serverHttpBaseUrl).resolve('/api/auth/me');
@@ -65,20 +86,66 @@ class AuthProvider extends ChangeNotifier {
           _userName = user['name'] as String?;
           _emailVerified = user['email_verified'] as bool?;
         }
-        return true;
+        return _TokenCheck.valid;
       }
-      return false;
+
+      // Invalid/expired token or revoked session should force sign-out.
+      if (response.statusCode == 401 || response.statusCode == 403 || response.statusCode == 404) {
+        return _TokenCheck.invalid;
+      }
+
+      // Other server errors: don't sign out; try again later.
+      return _TokenCheck.unknown;
     } catch (e) {
-      // Silently fail token verification if server is not available
-      // This allows the app to work offline, but user will need to sign in again when server is back
-      // Only log if it's not a connection error (which is expected when server is down)
-      if (e.toString().contains('Connection') || e.toString().contains('refused')) {
-        // Server is not running - this is expected, don't spam logs
-        return false;
+      // If server is not available, keep token and retry later.
+      final msg = e.toString();
+      if (msg.contains('Connection') || msg.contains('refused') || msg.contains('Failed host lookup')) {
+        return _TokenCheck.unknown;
       }
+      // Other errors: don't force logout.
       print('Token verification error: $e');
-      return false;
+      return _TokenCheck.unknown;
     }
+  }
+
+  void _startSessionWatchdog() {
+    _stopSessionWatchdog();
+    if (!isAuthenticated) return;
+    // Low-frequency watchdog with jitter to avoid thundering herd.
+    void scheduleNext() {
+      _sessionWatchdog?.cancel();
+      if (!isAuthenticated) return;
+      final baseSeconds = 60;
+      final jitterSeconds = _jitter.nextInt(16); // 0..15s
+      _sessionWatchdog = Timer(Duration(seconds: baseSeconds + jitterSeconds), () async {
+        if (_watchdogInFlight || !isAuthenticated) {
+          scheduleNext();
+          return;
+        }
+        _watchdogInFlight = true;
+        try {
+          final status = await _checkToken();
+          if (status == _TokenCheck.invalid) {
+            await _clearAuth();
+            notifyListeners();
+            return;
+          }
+        } finally {
+          _watchdogInFlight = false;
+        }
+        scheduleNext();
+      });
+    }
+
+    scheduleNext();
+  }
+
+  void _stopSessionWatchdog() {
+    try {
+      _sessionWatchdog?.cancel();
+    } catch (_) {}
+    _sessionWatchdog = null;
+    _watchdogInFlight = false;
   }
 
   Future<bool> signIn(String email, String password) async {
@@ -88,12 +155,35 @@ class AuthProvider extends ChangeNotifier {
 
     try {
       final uri = Uri.parse(AppConfig.serverHttpBaseUrl).resolve('/api/auth/signin');
+      final clientType = kIsWeb
+          ? 'web'
+          : (Platform.isAndroid || Platform.isIOS ? 'mobile' : 'desktop');
+      final platform = kIsWeb
+          ? 'unknown'
+          : (Platform.isWindows
+              ? 'windows'
+              : (Platform.isMacOS
+                  ? 'mac'
+                  : (Platform.isLinux
+                      ? 'linux'
+                      : (Platform.isAndroid ? 'android' : (Platform.isIOS ? 'ios' : 'unknown')))));
+      // Stable device id for login security checks
+      final prefs = await SharedPreferences.getInstance();
+      var deviceId = prefs.getString('device_id');
+      if (deviceId == null || deviceId.trim().isEmpty) {
+        final rand = _jitter.nextInt(1 << 30);
+        deviceId = 'device_${DateTime.now().microsecondsSinceEpoch}_$rand';
+        await prefs.setString('device_id', deviceId);
+      }
       final response = await http.post(
         uri,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'email': email,
           'password': password,
+          'clientType': clientType,
+          'platform': platform,
+          'deviceId': deviceId,
         }),
       ).timeout(const Duration(seconds: 10));
 
@@ -136,15 +226,22 @@ class AuthProvider extends ChangeNotifier {
         _errorMessage = null;
         _isLoading = false;
         print('[AuthProvider] Sign in successful, isAuthenticated will be: ${_token != null && _token!.isNotEmpty}');
+        _startSessionWatchdog();
         notifyListeners();
         return true;
       } else {
         // Handle different error status codes
         String errorMsg = 'Sign in failed';
         if (response.statusCode == 403) {
-          errorMsg = data['error'] as String? ?? 
-                    data['message'] as String? ?? 
-                    'Email not verified. Please check your inbox for the verification code.';
+          final requires = data['requiresSecurityCheck'] == true;
+          if (requires) {
+            _pendingLoginChallengeId = (data['challengeId'] as String?) ?? '';
+            errorMsg = data['message'] as String? ?? 'Security check required. Check your email for the code.';
+          } else {
+            errorMsg = data['error'] as String? ??
+                      data['message'] as String? ??
+                      'Email not verified. Please check your inbox for the verification code.';
+          }
         } else if (response.statusCode == 401) {
           errorMsg = data['error'] as String? ?? 
                     data['message'] as String? ?? 
@@ -157,6 +254,58 @@ class AuthProvider extends ChangeNotifier {
         _errorMessage = errorMsg;
         _isLoading = false;
         print('[AuthProvider] Sign in failed: $_errorMessage (status: ${response.statusCode})');
+        notifyListeners();
+        return false;
+      }
+    } catch (e) {
+      _errorMessage = 'Network error: ${e.toString()}';
+      _isLoading = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> verifyLoginChallenge(String code) async {
+    final id = _pendingLoginChallengeId;
+    if (id == null || id.trim().isEmpty) {
+      _errorMessage = 'No pending security check';
+      notifyListeners();
+      return false;
+    }
+    _isLoading = true;
+    _errorMessage = null;
+    notifyListeners();
+    try {
+      final uri = Uri.parse(AppConfig.serverHttpBaseUrl).resolve('/api/auth/verify-login-challenge');
+      final response = await http.post(
+        uri,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'challengeId': id, 'code': code.trim()}),
+      ).timeout(const Duration(seconds: 10));
+
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      if (response.statusCode == 200) {
+        _pendingLoginChallengeId = null;
+        _token = data['token'] as String?;
+        final user = data['user'] as Map<String, dynamic>?;
+        _userEmail = user?['email'] as String?;
+        _userName = user?['name'] as String?;
+        _emailVerified = user?['email_verified'] as bool?;
+
+        final prefs = await SharedPreferences.getInstance();
+        if (_token != null && _token!.isNotEmpty) {
+          await prefs.setString('auth_token', _token!);
+        }
+        if (_userEmail != null && _userEmail!.isNotEmpty) {
+          await prefs.setString('user_email', _userEmail!);
+        }
+        _isLoading = false;
+        _startSessionWatchdog();
+        notifyListeners();
+        return true;
+      } else {
+        _errorMessage = data['error'] as String? ?? 'Verification failed';
+        _isLoading = false;
         notifyListeners();
         return false;
       }
@@ -288,6 +437,8 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<void> _clearAuth() async {
+    _stopSessionWatchdog();
+    _pendingLoginChallengeId = null;
     _token = null;
     _userEmail = null;
     _userName = null;
@@ -634,3 +785,5 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 }
+
+enum _TokenCheck { valid, invalid, unknown }

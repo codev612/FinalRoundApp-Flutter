@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
+import { validateAuthSessionAndMaybeTouch } from './database.js';
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 // Hash password
@@ -12,8 +13,8 @@ export const verifyPassword = async (password, hash) => {
     return await bcrypt.compare(password, hash);
 };
 // Generate JWT token
-export const generateToken = (userId, email) => {
-    return jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+export const generateToken = (userId, email, sid) => {
+    return jwt.sign({ userId, email, ...(sid ? { sid } : {}) }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
 };
 // Verify JWT token
 export const verifyToken = (token) => {
@@ -45,6 +46,23 @@ export const authenticate = (req, res, next) => {
             return;
         }
         req.user = decoded;
+        // If the token is bound to a session, enforce it and update lastSeen.
+        const sid = decoded?.sid;
+        if (typeof sid === 'string' && sid.length > 0) {
+            validateAuthSessionAndMaybeTouch(decoded.userId, sid, 60_000)
+                .then((ok) => {
+                if (!ok) {
+                    res.status(401).json({ error: 'Session has been revoked. Please sign in again.' });
+                    return;
+                }
+                next();
+            })
+                .catch((_e) => {
+                // If DB is temporarily unavailable, fail closed for session-bound tokens.
+                res.status(503).json({ error: 'Session validation failed. Please try again.' });
+            });
+            return;
+        }
         next();
     }
     catch (error) {

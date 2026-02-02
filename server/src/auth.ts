@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import { Request, Response, NextFunction } from 'express';
+import { validateAuthSessionAndMaybeTouch } from './database.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
@@ -8,6 +9,7 @@ const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 export interface JWTPayload {
   userId: string; // MongoDB uses string IDs
   email: string;
+  sid?: string; // auth session id
 }
 
 export interface AuthRequest extends Request {
@@ -26,9 +28,9 @@ export const verifyPassword = async (password: string, hash: string): Promise<bo
 };
 
 // Generate JWT token
-export const generateToken = (userId: string, email: string): string => {
+export const generateToken = (userId: string, email: string, sid?: string): string => {
   return jwt.sign(
-    { userId, email },
+    { userId, email, ...(sid ? { sid } : {}) },
     JWT_SECRET,
     { expiresIn: JWT_EXPIRES_IN } as jwt.SignOptions
   );
@@ -68,6 +70,25 @@ export const authenticate = (req: AuthRequest, res: Response, next: NextFunction
     }
 
     req.user = decoded;
+
+    // If the token is bound to a session, enforce it and update lastSeen.
+    const sid = (decoded as any)?.sid;
+    if (typeof sid === 'string' && sid.length > 0) {
+      validateAuthSessionAndMaybeTouch(decoded.userId, sid, 60_000)
+        .then((ok) => {
+          if (!ok) {
+            res.status(401).json({ error: 'Session has been revoked. Please sign in again.' });
+            return;
+          }
+          next();
+        })
+        .catch((_e) => {
+          // If DB is temporarily unavailable, fail closed for session-bound tokens.
+          res.status(503).json({ error: 'Session validation failed. Please try again.' });
+        });
+      return;
+    }
+
     next();
   } catch (error) {
     if (req.method === 'DELETE' && req.path?.includes('custom-mode-configs')) {

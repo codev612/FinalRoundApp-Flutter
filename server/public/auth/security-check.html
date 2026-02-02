@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Security Check - FinalRoundApp</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      padding: 20px;
+    }
+    .container {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      padding: 40px;
+      max-width: 420px;
+      width: 100%;
+    }
+    h1 { color:#333; margin-bottom: 10px; text-align:center; }
+    .subtitle { color:#666; margin-bottom: 22px; text-align:center; }
+    .hint { color:#555; font-size: 13px; margin-bottom: 16px; text-align:center; }
+    .error {
+      background:#fee; color:#c33; padding: 12px; border-radius: 8px;
+      margin-bottom: 16px; display:none;
+    }
+    .form-group { margin-bottom: 16px; }
+    label { display:block; margin-bottom: 8px; color:#333; font-weight: 600; }
+    input {
+      width: 100%;
+      padding: 12px;
+      border: 2px solid #e0e0e0;
+      border-radius: 8px;
+      font-size: 16px;
+      letter-spacing: 6px;
+      font-weight: 800;
+      text-align: center;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+    }
+    input:focus { outline:none; border-color:#667eea; }
+    .btn {
+      width: 100%;
+      padding: 14px;
+      background: #667eea;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    .btn:hover { background:#5568d3; transform: translateY(-2px); box-shadow: 0 5px 15px rgba(102,126,234,0.4); }
+    .btn:disabled { background:#ccc; cursor:not-allowed; transform:none; box-shadow:none; }
+    .link { text-align:center; margin-top: 16px; }
+    .link a { color:#667eea; text-decoration:none; }
+    .link a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Security check</h1>
+    <p class="subtitle">Confirm it’s you to finish signing in</p>
+    <p class="hint">We sent a 6‑digit code to your email.</p>
+
+    <div class="error" id="error"></div>
+
+    <form id="form">
+      <div class="form-group">
+        <label for="code">Code</label>
+        <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="••••••" />
+      </div>
+      <button type="submit" class="btn" id="submitBtn">Verify</button>
+    </form>
+
+    <div class="link">
+      <a href="/auth/signin" id="backLink">Back to sign in</a>
+    </div>
+  </div>
+
+  <script>
+    const errorDiv = document.getElementById('error');
+    const submitBtn = document.getElementById('submitBtn');
+    const form = document.getElementById('form');
+    const codeEl = document.getElementById('code');
+
+    const challengeId = sessionStorage.getItem('login_challenge_id');
+    if (!challengeId) {
+      window.location.href = '/auth/signin';
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorDiv.style.display = 'none';
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Verifying…';
+      try {
+        const code = String(codeEl.value || '').trim();
+        const res = await fetch('/api/auth/verify-login-challenge', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ challengeId, code })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || data.message || ('HTTP ' + res.status));
+        localStorage.setItem('token', data.token);
+        sessionStorage.removeItem('login_challenge_id');
+        window.location.href = '/dashboard';
+      } catch (err) {
+        errorDiv.textContent = String(err.message || err);
+        errorDiv.style.display = 'block';
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Verify';
+      }
+    });
+  </script>
+</body>
+</html>
+

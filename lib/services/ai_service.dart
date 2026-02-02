@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -17,6 +18,7 @@ class AiService {
   WebSocketChannel? _aiChannel;
   StreamSubscription? _aiSub;
   final Map<String, StreamController<String>> _streams = {};
+  VoidCallback? _onSessionRevoked;
 
   AiService({required this.httpBaseUrl, this.aiWsUrl, String? authToken}) : _authToken = authToken;
 
@@ -27,6 +29,10 @@ class AiService {
     if (tokenChanged && _aiChannel != null) {
       disconnectAi();
     }
+  }
+
+  void setOnSessionRevoked(VoidCallback? cb) {
+    _onSessionRevoked = cb;
   }
 
   Future<void> _ensureAiConnected() async {
@@ -63,6 +69,15 @@ class AiService {
 
           final type = data['type']?.toString() ?? '';
           final requestId = data['requestId']?.toString() ?? '';
+
+          if (type == 'session_revoked') {
+            // Server revoked this auth session. Force sign-out and reset WS.
+            try {
+              _onSessionRevoked?.call();
+            } catch (_) {}
+            disconnectAi();
+            return;
+          }
           
           // Handle ai_start message (has requestId but is just a notification)
           if (type == 'ai_start') {

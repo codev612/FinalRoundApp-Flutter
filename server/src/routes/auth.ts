@@ -4,6 +4,19 @@ import {
   getUserByEmail,
   getUserById,
   getUserByIdFull,
+  createAuthSession,
+  countAuthSessions,
+  listAuthSessions,
+  revokeAuthSession,
+  revokeOtherAuthSessions,
+  deleteUserAccount,
+  countTrustedDevices,
+  getTrustedDevice,
+  upsertTrustedDeviceOnLogin,
+  createLoginChallenge,
+  getLoginChallengeById,
+  incrementLoginChallengeAttempts,
+  markLoginChallengeUsed,
   getUserByVerificationToken,
   getUserByResetCode,
   markEmailVerified,
@@ -19,8 +32,9 @@ import {
   clearPendingEmailChange,
 } from '../database.js';
 import { hashPassword, verifyPassword, generateToken } from '../auth.js';
-import { sendVerificationEmail, sendPasswordResetEmail, sendProfileChangeAlert } from '../emailService.js';
+import { sendVerificationEmail, sendPasswordResetEmail, sendProfileChangeAlert, sendLoginSecurityCodeEmail } from '../emailService.js';
 import { authenticate, AuthRequest } from '../auth.js';
+import { closeWebSocketsForSession } from '../sessionBus.js';
 
 const router = express.Router();
 
@@ -33,6 +47,9 @@ interface SignupBody {
 interface SigninBody {
   email?: string;
   password?: string;
+  clientType?: 'web' | 'desktop' | 'mobile' | 'unknown';
+  platform?: 'windows' | 'mac' | 'linux' | 'android' | 'ios' | 'unknown';
+  deviceId?: string;
 }
 
 interface ResendVerificationBody {
@@ -167,8 +184,123 @@ router.post('/signin', async (req: Request<{}, {}, SigninBody>, res: Response) =
       });
     }
 
-    // Generate JWT token
-    const token = generateToken(user.id, user.email);
+    const userAgent = String(req.headers['user-agent'] || '');
+    const forwardedFor = String(req.headers['x-forwarded-for'] || '');
+    const ip = (forwardedFor.split(',')[0] || req.ip || '').trim();
+    const deviceId = String(req.body?.deviceId || '').trim();
+    if (!deviceId) {
+      return res.status(400).json({ error: 'deviceId is required' });
+    }
+
+    const locationKeyFromIp = (rawIp: string): string | null => {
+      const ip2 = (rawIp || '').trim();
+      if (!ip2) return null;
+      // Strip IPv6-mapped IPv4 prefix
+      const v = ip2.startsWith('::ffff:') ? ip2.substring('::ffff:'.length) : ip2;
+      if (v.includes('.')) {
+        const parts = v.split('.');
+        if (parts.length >= 3) return `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
+        return v;
+      }
+      // IPv6: keep first 4 hextets (rough /64-ish bucket)
+      const hextets = v.split(':').filter((p) => p.length > 0);
+      return hextets.length >= 4 ? `${hextets.slice(0, 4).join(':')}::/64` : v;
+    };
+    const locationKey = locationKeyFromIp(ip);
+
+    const detectPlatform = (ua: string): 'windows' | 'mac' | 'linux' | 'android' | 'ios' | 'unknown' => {
+      const s = (ua || '').toLowerCase();
+      if (s.includes('windows')) return 'windows';
+      if (s.includes('mac os') || s.includes('macintosh')) return 'mac';
+      if (s.includes('android')) return 'android';
+      if (s.includes('iphone') || s.includes('ipad') || s.includes('ios')) return 'ios';
+      if (s.includes('linux')) return 'linux';
+      return 'unknown';
+    };
+    const detectClientType = (ua: string): 'web' | 'desktop' | 'mobile' | 'unknown' => {
+      const s = (ua || '').toLowerCase();
+      // Browser UAs almost always include Mozilla/
+      if (s.includes('mozilla/')) return 'web';
+      // Flutter/Dart (desktop/mobile native) often shows Dart/.. or Flutter
+      if (s.includes('dart/') || s.includes('flutter')) return 'desktop';
+      return 'unknown';
+    };
+
+    const headerClient = String((req.headers['x-finalround-client'] || req.headers['x-client-type'] || '') as any).trim().toLowerCase();
+    const headerPlatform = String((req.headers['x-finalround-platform'] || req.headers['x-platform'] || '') as any).trim().toLowerCase();
+
+    const bodyClient = (req.body?.clientType || '').toString().trim().toLowerCase();
+    const bodyPlatform = (req.body?.platform || '').toString().trim().toLowerCase();
+
+    const clientType: any =
+      (headerClient || bodyClient) ||
+      detectClientType(userAgent);
+    const platform: any =
+      (headerPlatform || bodyPlatform) ||
+      detectPlatform(userAgent);
+
+    const normalizedClient: 'web' | 'desktop' | 'mobile' | 'unknown' =
+      clientType === 'web' || clientType === 'desktop' || clientType === 'mobile' ? clientType : 'unknown';
+    const normalizedPlatform: 'windows' | 'mac' | 'linux' | 'android' | 'ios' | 'unknown' =
+      platform === 'windows' || platform === 'mac' || platform === 'linux' || platform === 'android' || platform === 'ios'
+        ? platform
+        : 'unknown';
+
+    // Security check: if a new device is detected OR location changed for this device,
+    // require email code before issuing a token.
+    const trustedCount = await countTrustedDevices(user.id);
+    const trusted = await getTrustedDevice(user.id, deviceId);
+    const isNewDevice = !trusted && trustedCount > 0;
+    const isLocationChanged = !!(trusted && (trusted.lastLocationKey ?? null) && (trusted.lastLocationKey ?? null) != (locationKey ?? null));
+
+    if (isNewDevice || isLocationChanged) {
+      const code = generateVerificationCode(); // 6 digits
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+      const challenge = await createLoginChallenge({
+        userId: user.id,
+        email: user.email,
+        deviceId,
+        locationKey,
+        clientType: normalizedClient,
+        platform: normalizedPlatform,
+        userAgent,
+        ip,
+        code,
+        expiresAt,
+      });
+
+      const sent = await sendLoginSecurityCodeEmail(user.email, code);
+      if (!sent) {
+        console.warn(`⚠ Mailgun not configured. Login security code for ${user.email}: ${code}`);
+      }
+
+      const isDevelopment = !process.env.MAILGUN_API_KEY || !process.env.MAILGUN_DOMAIN;
+      return res.status(403).json({
+        error: 'Security check required',
+        requiresSecurityCheck: true,
+        challengeId: challenge.id,
+        message: sent
+          ? 'We sent a security code to your email. Enter it to finish signing in.'
+          : 'We generated a security code. Enter it to finish signing in (see server logs in development).',
+        ...(isDevelopment ? { devCode: code } : {}),
+      });
+    }
+
+    // Trusted/first device: proceed and record as trusted.
+    await upsertTrustedDeviceOnLogin({
+      userId: user.id,
+      deviceId,
+      clientType: normalizedClient,
+      platform: normalizedPlatform,
+      locationKey,
+      ip,
+      userAgent,
+    });
+
+    const sid = await createAuthSession(user.id, normalizedClient, normalizedPlatform, userAgent, ip, deviceId, locationKey);
+
+    // Generate JWT token bound to this auth session
+    const token = generateToken(user.id, user.email, sid);
 
     return res.json({
       message: 'Sign in successful',
@@ -184,6 +316,184 @@ router.post('/signin', async (req: Request<{}, {}, SigninBody>, res: Response) =
     console.error('Signin error:', error);
     res.status(500).json({ error: 'Internal server error' });
     return;
+  }
+});
+
+// Verify security code to finish sign-in
+router.post('/verify-login-challenge', async (req: Request, res: Response) => {
+  try {
+    const challengeId = String(req.body?.challengeId || '').trim();
+    const code = String(req.body?.code || '').trim();
+    if (!challengeId || !code) {
+      return res.status(400).json({ error: 'challengeId and code are required' });
+    }
+    if (typeof code !== 'string' || code.length !== 6 || !/^\d{6}$/.test(code)) {
+      return res.status(400).json({ error: 'Invalid code format. Must be 6 digits.' });
+    }
+
+    const challenge = await getLoginChallengeById(challengeId);
+    if (!challenge || !challenge.id) {
+      return res.status(404).json({ error: 'Challenge not found' });
+    }
+    if (challenge.usedAt) {
+      return res.status(400).json({ error: 'Challenge already used' });
+    }
+    if (challenge.expiresAt && new Date(challenge.expiresAt).getTime() < Date.now()) {
+      return res.status(400).json({ error: 'Code expired. Please sign in again.' });
+    }
+    if ((challenge.attempts ?? 0) >= 6) {
+      return res.status(429).json({ error: 'Too many attempts. Please sign in again.' });
+    }
+
+    if (challenge.code !== code) {
+      await incrementLoginChallengeAttempts(challenge.id);
+      return res.status(400).json({ error: 'Invalid code' });
+    }
+
+    await markLoginChallengeUsed(challenge.id);
+
+    // Mark device trusted and create an auth session
+    await upsertTrustedDeviceOnLogin({
+      userId: challenge.userId,
+      deviceId: challenge.deviceId,
+      clientType: challenge.clientType,
+      platform: challenge.platform,
+      locationKey: challenge.locationKey ?? null,
+      ip: challenge.ip,
+      userAgent: challenge.userAgent,
+    });
+    const sid = await createAuthSession(
+      challenge.userId,
+      challenge.clientType,
+      challenge.platform,
+      challenge.userAgent,
+      challenge.ip,
+      challenge.deviceId,
+      challenge.locationKey ?? null
+    );
+    const token = generateToken(challenge.userId, challenge.email, sid);
+
+    const user = await getUserById(String(challenge.userId));
+    return res.json({
+      message: 'Sign in successful',
+      token,
+      user: user
+        ? {
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            email_verified: user.email_verified,
+          }
+        : { id: challenge.userId, email: challenge.email, name: '', email_verified: true },
+    });
+  } catch (error: any) {
+    console.error('Verify login challenge error:', error);
+    return res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Active auth sessions (devices/logins)
+router.get('/sessions', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const limitRaw = typeof req.query?.limit === 'string' ? parseInt(req.query.limit, 10) : NaN;
+    const skipRaw = typeof req.query?.skip === 'string' ? parseInt(req.query.skip, 10) : NaN;
+    const limit = Number.isFinite(limitRaw) ? limitRaw : 10;
+    const skip = Number.isFinite(skipRaw) ? skipRaw : 0;
+
+    const [total, sessions] = await Promise.all([
+      countAuthSessions(userId),
+      listAuthSessions(userId, { limit, skip }),
+    ]);
+
+    const clientLabel = (t: string, p: string) => {
+      const type = String(t || 'unknown');
+      const plat = String(p || 'unknown');
+      const typeLabel =
+        type === 'web' ? 'Web' :
+        type === 'desktop' ? 'Desktop app' :
+        type === 'mobile' ? 'Mobile app' :
+        'Unknown';
+      const platLabel =
+        plat === 'windows' ? 'Windows' :
+        plat === 'mac' ? 'macOS' :
+        plat === 'linux' ? 'Linux' :
+        plat === 'android' ? 'Android' :
+        plat === 'ios' ? 'iOS' :
+        '';
+      return platLabel ? `${typeLabel} • ${platLabel}` : typeLabel;
+    };
+
+    return res.json({
+      currentSessionId: (req.user as any)?.sid ?? null,
+      total,
+      limit,
+      skip,
+      sessions: sessions.map((s) => ({
+        id: s.id,
+        createdAt: s.createdAt,
+        lastSeenAt: s.lastSeenAt,
+        clientType: (s as any).clientType ?? 'unknown',
+        platform: (s as any).platform ?? 'unknown',
+        clientLabel: clientLabel((s as any).clientType, (s as any).platform),
+        userAgent: s.userAgent,
+        ip: s.ip,
+        revokedAt: s.revokedAt,
+      })),
+    });
+  } catch (error: any) {
+    console.error('List auth sessions error:', error);
+    return res.status(500).json({ error: error.message || 'Failed to list sessions' });
+  }
+});
+
+router.post('/sessions/:id/revoke', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const id = String(req.params.id || '');
+    if (!id) return res.status(400).json({ error: 'Session id is required' });
+    const ok = await revokeAuthSession(userId, id);
+    if (!ok) return res.status(404).json({ error: 'Session not found' });
+    closeWebSocketsForSession(id);
+    return res.json({ ok: true });
+  } catch (error: any) {
+    console.error('Revoke auth session error:', error);
+    return res.status(500).json({ error: error.message || 'Failed to revoke session' });
+  }
+});
+
+router.post('/sessions/revoke-others', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const keep = (req.user as any)?.sid ? String((req.user as any).sid) : null;
+    const revoked = await revokeOtherAuthSessions(userId, keep);
+    return res.json({ ok: true, revoked });
+  } catch (error: any) {
+    console.error('Revoke other sessions error:', error);
+    return res.status(500).json({ error: error.message || 'Failed to revoke other sessions' });
+  }
+});
+
+// Delete account (permanent)
+router.post('/delete-account', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const password = String(req.body?.password || '');
+    const confirm = String(req.body?.confirm || '');
+    if (!password) return res.status(400).json({ error: 'Password is required' });
+    if (confirm !== 'DELETE') return res.status(400).json({ error: 'Type DELETE to confirm' });
+
+    const user = await getUserByIdFull(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const ok = await verifyPassword(password, user.password_hash);
+    if (!ok) return res.status(401).json({ error: 'Invalid password' });
+
+    await deleteUserAccount(userId);
+    return res.json({ ok: true });
+  } catch (error: any) {
+    console.error('Delete account error:', error);
+    return res.status(500).json({ error: error.message || 'Failed to delete account' });
   }
 });
 

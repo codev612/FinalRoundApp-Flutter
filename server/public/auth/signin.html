@@ -132,6 +132,19 @@
         const errorDiv = document.getElementById('error');
         const submitBtn = document.getElementById('submitBtn');
 
+        function getDeviceId() {
+            const key = 'finalround_device_id';
+            let id = localStorage.getItem(key);
+            if (id && id.length > 10) return id;
+            if (crypto && typeof crypto.randomUUID === 'function') {
+                id = crypto.randomUUID();
+            } else {
+                id = 'dev_' + Math.random().toString(16).slice(2) + '_' + Date.now().toString(16);
+            }
+            localStorage.setItem(key, id);
+            return id;
+        }
+
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
             
@@ -142,7 +155,12 @@
             const formData = new FormData(form);
             const data = {
                 email: formData.get('email'),
-                password: formData.get('password')
+                password: formData.get('password'),
+                clientType: 'web',
+                platform: (navigator.userAgent || '').toLowerCase().includes('windows') ? 'windows'
+                    : ((navigator.userAgent || '').toLowerCase().includes('mac') ? 'mac'
+                    : ((navigator.userAgent || '').toLowerCase().includes('linux') ? 'linux' : 'unknown')),
+                deviceId: getDeviceId(),
             };
 
             try {
@@ -162,6 +180,11 @@
                     // Redirect to dashboard
                     window.location.href = '/dashboard';
                 } else {
+                    if (response.status === 403 && result && result.requiresSecurityCheck) {
+                        sessionStorage.setItem('login_challenge_id', result.challengeId);
+                        window.location.href = '/auth/security-check';
+                        return;
+                    }
                     errorDiv.textContent = result.error || result.message || 'An error occurred';
                     errorDiv.style.display = 'block';
                 }

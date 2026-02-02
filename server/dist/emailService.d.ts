@@ -10,4 +10,5 @@ export declare const sendProfileChangeAlert: (email: string, changes: {
     oldEmail?: string;
     newEmail?: string;
 }) => Promise<boolean>;
+export declare const sendLoginSecurityCodeEmail: (email: string, code: string) => Promise<boolean>;
 //# sourceMappingURL=emailService.d.ts.map

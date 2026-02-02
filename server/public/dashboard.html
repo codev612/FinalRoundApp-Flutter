@@ -207,6 +207,19 @@
     }
     .btn-apply:hover { transform: translateY(-1px); }
     .btn-apply:active { transform: translateY(0px); opacity: 0.95; }
+    .btn-revoke {
+      background: rgba(239,68,68,0.12);
+      color: #991b1b;
+      border: 1px solid rgba(239,68,68,0.35);
+    }
+    .btn-revoke:hover { background: rgba(239,68,68,0.18); transform: translateY(-1px); }
+    .btn-revoke:active { transform: translateY(0px); opacity: 0.95; }
+    .btn-light {
+      background: rgba(0,0,0,0.05);
+      color: #111;
+      border: 1px solid rgba(0,0,0,0.12);
+    }
+    .btn-light:hover { background: rgba(0,0,0,0.08); transform: translateY(-1px); }
     .dateRange { display: inline-flex; align-items: center; gap: 8px; }
     .dateRange .arrow { color: rgba(0,0,0,0.50); font-weight: 900; font-size: 12px; }
     .dateRange input[type="date"] {
@@ -220,6 +233,83 @@
       color: #111;
       line-height: 1.2;
     }
+
+    .input {
+      appearance: none;
+      border: 1px solid rgba(0,0,0,0.12);
+      background: rgba(255,255,255,0.96);
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-weight: 800;
+      font-size: 13px;
+      color: #111;
+      min-width: 220px;
+    }
+    .formRow { display:flex; gap:10px; flex-wrap:wrap; margin-top: 10px; align-items: center; }
+
+    .sessionsList { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+    .sessionRow {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px solid #e8e8f4;
+      background: #fff;
+    }
+    .sessionMeta { min-width: 0; flex: 1 1 auto; }
+    .sessionTitle { display:flex; align-items:center; gap: 8px; flex-wrap: wrap; font-weight: 900; }
+    .sessionSub { margin-top: 4px; font-size: 12px; color: #555; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .badgeSmall {
+      display: inline-block;
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(0,0,0,0.10);
+      font-weight: 900;
+    }
+    .badgeCurrent { background: rgba(139,92,246,0.14); color: #4c1d95; border-color: rgba(139,92,246,0.25); }
+    .badgeRevoked { background: rgba(0,0,0,0.06); color: rgba(0,0,0,0.55); }
+    .sessionActions { display:flex; gap: 8px; align-items: center; flex: 0 0 auto; }
+
+    .btn-danger { background: #ef4444; color: white; border: 1px solid rgba(239,68,68,0.55); }
+    .btn-danger:hover { transform: translateY(-1px); }
+    .btn-danger:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+    .dangerBox {
+      margin-top: 10px;
+      border-radius: 14px;
+      padding: 12px;
+      background: #fff1f2;
+      border: 1px solid #fecdd3;
+      color: #9f1239;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .tableWrap { width: 100%; overflow-x: auto; }
+    .table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+      border: 1px solid #e8e8f4;
+      border-radius: 14px;
+      overflow: hidden;
+    }
+    .table th, .table td {
+      padding: 10px 12px;
+      text-align: left;
+      border-bottom: 1px solid #f0f0f7;
+      font-size: 13px;
+    }
+    .table th {
+      background: rgba(0,0,0,0.03);
+      font-weight: 900;
+      color: #111;
+      white-space: nowrap;
+    }
+    .table th.num, .table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .table tr:last-child td { border-bottom: none; }
 
     .view { display: none; }
     .view.active { display: block; }
@@ -424,12 +514,49 @@
             <div class="muted">Upgrade flow isn’t wired yet, but these are the available tiers.</div>
             <div class="plans" id="plans"></div>
           </div>
+
+          <div class="card">
+            <h1>Daily AI token usage</h1>
+            <div class="muted">Same range as the Overview chart.</div>
+            <div class="error" id="dailyChartErrorUsage" style="display:none;"></div>
+            <div style="margin-top: 12px;">
+              <canvas id="dailyTokensChartUsage" style="width:100%; height:260px; display:block;"></canvas>
+            </div>
+          </div>
+
+          <div class="card">
+            <h1>Monthly usage (daily)</h1>
+            <div class="muted">Daily AI token usage for the current billing month (up to today).</div>
+            <div class="error" id="monthlyTableError" style="display:none;"></div>
+            <div class="tableWrap" style="margin-top: 12px;">
+              <table class="table" id="monthlyUsageTable"></table>
+            </div>
+          </div>
         </div>
 
         <div class="view" id="view-settings">
           <div class="card">
-            <h1>Settings</h1>
-            <div class="placeholder">Coming soon: web settings (profile, security, preferences).</div>
+            <h1>Active sessions</h1>
+            <div class="muted">Devices currently signed in to your account. You can sign out other sessions.</div>
+            <div class="error" id="sessionsError" style="display:none;"></div>
+            <div class="sessionsList" id="sessionsList"></div>
+            <div style="margin-top: 10px; display:flex; gap:10px; flex-wrap:wrap;">
+              <button class="btn btn-sm btn-light" id="sessionsShowMoreBtn" style="display:none;">Show more</button>
+              <button class="btn btn-primary btn-sm" id="revokeOthersBtn">Sign out other sessions</button>
+            </div>
+          </div>
+          <div class="card">
+            <h1>Delete account</h1>
+            <div class="muted">This permanently deletes your account and all related data. This can’t be undone.</div>
+            <div class="dangerBox">
+              This will delete: meeting sessions, modes, question templates, usage history, and sign-ins.
+            </div>
+            <div class="formRow">
+              <input class="input" type="password" id="deletePassword" placeholder="Password" autocomplete="current-password" />
+              <input class="input" type="text" id="deleteConfirm" placeholder="Type DELETE to confirm" />
+              <button class="btn btn-danger" id="deleteAccountBtn" disabled>Delete account</button>
+            </div>
+            <div class="error" id="deleteError" style="display:none;"></div>
           </div>
         </div>
 
@@ -496,6 +623,12 @@
     // Date picker limits. We only cap max to today to avoid selecting future dates.
     let minSelectableDay = null; // YYYY-MM-DD (optional; keep null to allow previous months)
     let maxSelectableDay = null; // YYYY-MM-DD (today UTC)
+    let currentAuthSessionId = null; // string | null
+    let billingPeriodStartYmd = null; // YYYY-MM-DD (UTC)
+    let billingInfoLoaded = false;
+    let sessionsLoaded = 0;
+    let sessionsTotal = null;
+    const sessionsPageSize = 10;
 
     function fmt(n) { return String(n ?? 0); }
     function clampPct(v) { return Math.max(0, Math.min(100, v)); }
@@ -602,8 +735,9 @@
       if (el) el.textContent = 'Billing period: ' + start + ' → ' + end;
     }
 
-    function drawDailyTokensChart(points) {
-      const canvas = $('dailyTokensChart');
+    function drawDailyTokensChart(points, canvasId) {
+      const id = canvasId || 'dailyTokensChart';
+      const canvas = $(id);
       if (!canvas) return;
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
@@ -699,12 +833,248 @@
         if (!res.ok) throw new Error(data.error || data.message || ('HTTP ' + res.status));
         const days = Array.isArray(data.days) ? data.days : [];
         dailyPoints = days;
-        drawDailyTokensChart(dailyPoints);
+        drawDailyTokensChart(dailyPoints, 'dailyTokensChart');
+        drawDailyTokensChart(dailyPoints, 'dailyTokensChartUsage');
       } catch (e) {
         if (errEl) {
           errEl.textContent = String(e.message || e);
           errEl.style.display = 'block';
         }
+      }
+    }
+
+    async function loadMonthlyUsageTable() {
+      const table = $('monthlyUsageTable');
+      const errEl = $('monthlyTableError');
+      if (errEl) errEl.style.display = 'none';
+      if (!table) return;
+      table.innerHTML = '<tr><td>Loading…</td></tr>';
+      try {
+        if (!billingPeriodStartYmd || !maxSelectableDay || !billingInfoLoaded) {
+          // Billing info is fetched by load(); this can run before it finishes.
+          // Keep the "Loading…" state and retry once shortly.
+          setTimeout(() => {
+            if (currentRoute === 'usage') loadMonthlyUsageTable();
+          }, 250);
+          return;
+        }
+        const url = '/api/billing/ai-daily-tokens-by-model?start=' + encodeURIComponent(billingPeriodStartYmd) +
+          '&end=' + encodeURIComponent(maxSelectableDay);
+        const res = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || data.message || ('HTTP ' + res.status));
+        const rows = Array.isArray(data.days) ? data.days : [];
+        const models = Array.isArray(data.models) ? data.models : [];
+        const totalsByModel = data && typeof data.totalsByModel === 'object' && data.totalsByModel ? data.totalsByModel : {};
+        const total = Number(data.totalTokens || 0) || 0;
+
+        table.innerHTML = `
+          <thead><tr><th>Date</th><th>Model</th><th class="num">Total</th></tr></thead>
+          <tbody></tbody>
+          <tfoot></tfoot>
+        `;
+        const tbody = table.querySelector('tbody');
+        for (const r of rows) {
+          const date = String(r.date || '');
+          const byModel = r.byModel && typeof r.byModel === 'object' ? r.byModel : {};
+
+          const entries = [];
+          for (const m of models) {
+            const v = Number(byModel[m] || 0) || 0;
+            if (v > 0) entries.push([m, v]);
+          }
+          if (entries.length === 0) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${date}</td><td>—</td><td class="num">0</td>`;
+            tbody.appendChild(tr);
+            continue;
+          }
+          for (let i = 0; i < entries.length; i++) {
+            const [m, v] = entries[i];
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${i === 0 ? date : ''}</td><td>${String(m)}</td><td class="num">${String(v)}</td>`;
+            tbody.appendChild(tr);
+          }
+        }
+
+        const tfoot = table.querySelector('tfoot');
+        const totalRows = [];
+        totalRows.push(`<tr><th>Total</th><th>All</th><th class="num">${String(total)}</th></tr>`);
+        for (const m of models) {
+          const v = Number(totalsByModel[m] || 0) || 0;
+          if (v <= 0) continue;
+          totalRows.push(`<tr><th>Total</th><th>${String(m)}</th><th class="num">${String(v)}</th></tr>`);
+        }
+        tfoot.innerHTML = totalRows.join('');
+      } catch (e) {
+        table.innerHTML = '';
+        if (errEl) {
+          errEl.textContent = String(e.message || e);
+          errEl.style.display = 'block';
+        }
+      }
+    }
+
+    function formatLocalDateTime(v) {
+      try {
+        const d = new Date(v);
+        if (!Number.isFinite(d.getTime())) return String(v || '');
+        return d.toLocaleString();
+      } catch (_) {
+        return String(v || '');
+      }
+    }
+
+    function updateSessionsShowMore() {
+      const btn = $('sessionsShowMoreBtn');
+      if (!btn) return;
+      if (typeof sessionsTotal === 'number' && sessionsTotal > sessionsLoaded) {
+        btn.style.display = 'inline-flex';
+        btn.textContent = 'Show more';
+      } else {
+        btn.style.display = 'none';
+      }
+    }
+
+    function _buildSessionRow(s, currentId, errEl) {
+      const row = document.createElement('div');
+      row.className = 'sessionRow';
+
+      const meta = document.createElement('div');
+      meta.className = 'sessionMeta';
+
+      const title = document.createElement('div');
+      title.className = 'sessionTitle';
+      const label = document.createElement('span');
+      const ct = String(s.clientType || '').toLowerCase();
+      const typeLabel =
+        ct === 'web' ? 'Web' :
+        ct === 'desktop' ? 'Desktop app' :
+        ct === 'mobile' ? 'Mobile app' :
+        'Session';
+      label.textContent = typeLabel;
+      title.appendChild(label);
+
+      const isCurrent = currentId && s.id && String(s.id) === currentId;
+      const isRevoked = !!s.revokedAt;
+
+      if (isCurrent) {
+        const b = document.createElement('span');
+        b.className = 'badgeSmall badgeCurrent';
+        b.textContent = 'Current';
+        title.appendChild(b);
+      }
+      if (isRevoked) {
+        const b = document.createElement('span');
+        b.className = 'badgeSmall badgeRevoked';
+        b.textContent = 'Revoked';
+        title.appendChild(b);
+      }
+
+      const sub = document.createElement('div');
+      sub.className = 'sessionSub';
+      sub.textContent = 'Last active: ' + formatLocalDateTime(s.lastSeenAt);
+
+      meta.appendChild(title);
+      meta.appendChild(sub);
+
+      const actions = document.createElement('div');
+      actions.className = 'sessionActions';
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-sm btn-revoke';
+      btn.textContent = 'Sign out';
+      btn.disabled = isRevoked || !s.id;
+      btn.addEventListener('click', async () => {
+        try {
+          btn.disabled = true;
+          const rr = await fetch('/api/auth/sessions/' + encodeURIComponent(String(s.id)) + '/revoke', {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + token }
+          });
+          const dd = await rr.json().catch(() => ({}));
+          if (!rr.ok) throw new Error(dd.error || dd.message || ('HTTP ' + rr.status));
+          // If the user revoked the current session, sign out immediately.
+          if (currentAuthSessionId && String(s.id) === String(currentAuthSessionId)) {
+            localStorage.removeItem('token');
+            window.location.href = '/auth/signin';
+            return;
+          }
+          await loadAuthSessions({ append: false });
+        } catch (e) {
+          if (errEl) {
+            errEl.textContent = String(e.message || e);
+            errEl.style.display = 'block';
+          }
+          const msg = String(e && (e.message || e) || '');
+          if (msg.includes('revoked') || msg.includes('401')) {
+            localStorage.removeItem('token');
+            window.location.href = '/auth/signin';
+            return;
+          }
+          await loadAuthSessions({ append: false });
+        }
+      });
+
+      actions.appendChild(btn);
+      row.appendChild(meta);
+      row.appendChild(actions);
+      return row;
+    }
+
+    async function loadAuthSessions(opts) {
+      const append = !!(opts && opts.append);
+      const box = $('sessionsList');
+      const errEl = $('sessionsError');
+      if (errEl) errEl.style.display = 'none';
+      const showMoreBtn = $('sessionsShowMoreBtn');
+      if (!append) {
+        sessionsLoaded = 0;
+        sessionsTotal = null;
+        if (box) box.textContent = 'Loading…';
+      } else {
+        if (showMoreBtn) showMoreBtn.disabled = true;
+      }
+      try {
+        const skip = append ? sessionsLoaded : 0;
+        const url = '/api/auth/sessions?limit=' + encodeURIComponent(String(sessionsPageSize)) +
+          '&skip=' + encodeURIComponent(String(skip));
+        const res = await fetch(url, {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || data.message || ('HTTP ' + res.status));
+
+        const currentId = data.currentSessionId ? String(data.currentSessionId) : null;
+        currentAuthSessionId = currentId;
+        const total = typeof data.total === 'number' ? data.total : null;
+        sessionsTotal = total;
+        const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+
+        if (!box) return;
+        if (!append) box.innerHTML = '';
+        if (!append && sessions.length === 0) {
+          const empty = document.createElement('div');
+          empty.className = 'placeholder';
+          empty.textContent = 'No sessions found yet.';
+          box.appendChild(empty);
+          updateSessionsShowMore();
+          return;
+        }
+
+        sessions.forEach((s) => {
+          box.appendChild(_buildSessionRow(s, currentId, errEl));
+        });
+        sessionsLoaded += sessions.length;
+        updateSessionsShowMore();
+      } catch (e) {
+        if (errEl) {
+          errEl.textContent = String(e.message || e);
+          errEl.style.display = 'block';
+        }
+        if (!append && box) box.textContent = '';
+        updateSessionsShowMore();
+      } finally {
+        if (showMoreBtn) showMoreBtn.disabled = false;
       }
     }
 
@@ -739,10 +1109,23 @@
       // Chart needs a visible canvas size to render correctly.
       if (r === 'overview') {
         if (Array.isArray(dailyPoints) && dailyPoints.length > 0) {
-          setTimeout(() => drawDailyTokensChart(dailyPoints), 0);
+          setTimeout(() => drawDailyTokensChart(dailyPoints, 'dailyTokensChart'), 0);
         } else {
           loadDailyTokens();
         }
+      }
+
+      if (r === 'usage') {
+        if (Array.isArray(dailyPoints) && dailyPoints.length > 0) {
+          setTimeout(() => drawDailyTokensChart(dailyPoints, 'dailyTokensChartUsage'), 0);
+        } else {
+          loadDailyTokens();
+        }
+        loadMonthlyUsageTable();
+      }
+
+      if (r === 'settings') {
+        loadAuthSessions();
       }
     }
 
@@ -750,6 +1133,7 @@
       clearErrors();
       refreshBtn.disabled = true;
       refreshBtn.textContent = 'Refreshing…';
+      billingInfoLoaded = false;
 
       try {
         const res = await fetch('/api/billing/me', {
@@ -782,6 +1166,8 @@
           const bpStartIso = data.billingPeriod?.start;
           const bpEndIso = data.billingPeriod?.end; // end is exclusive start-of-next-period
           if (bpStartIso && bpEndIso) {
+            const bpStart = new Date(bpStartIso);
+            billingPeriodStartYmd = ymdUTC(bpStart);
             const today = ymdUTC(new Date());
             maxSelectableDay = today;
             // Keep minSelectableDay = null to allow selecting previous months.
@@ -795,7 +1181,11 @@
           // If parsing fails, inputs remain unconstrained.
         }
 
+        billingInfoLoaded = true;
         loadDailyTokens();
+        if (currentRoute === 'usage') {
+          loadMonthlyUsageTable();
+        }
       } catch (e) {
         showError(String(e.message || e));
       } finally {
@@ -810,6 +1200,82 @@
     });
     refreshBtn.addEventListener('click', load);
 
+    // Settings: active sessions + delete account
+    const revokeOthersBtn = $('revokeOthersBtn');
+    if (revokeOthersBtn) {
+      revokeOthersBtn.addEventListener('click', async () => {
+        const errEl = $('sessionsError');
+        if (errEl) errEl.style.display = 'none';
+        try {
+          revokeOthersBtn.disabled = true;
+          const res = await fetch('/api/auth/sessions/revoke-others', {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + token }
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || data.message || ('HTTP ' + res.status));
+          await loadAuthSessions({ append: false });
+        } catch (e) {
+          if (errEl) {
+            errEl.textContent = String(e.message || e);
+            errEl.style.display = 'block';
+          }
+        } finally {
+          revokeOthersBtn.disabled = false;
+        }
+      });
+    }
+
+    const sessionsShowMoreBtn = $('sessionsShowMoreBtn');
+    if (sessionsShowMoreBtn) {
+      sessionsShowMoreBtn.addEventListener('click', async () => {
+        await loadAuthSessions({ append: true });
+      });
+    }
+
+    const deletePasswordEl = $('deletePassword');
+    const deleteConfirmEl = $('deleteConfirm');
+    const deleteBtn = $('deleteAccountBtn');
+    function updateDeleteBtn() {
+      if (!deleteBtn) return;
+      const p = String(deletePasswordEl?.value || '');
+      const c = String(deleteConfirmEl?.value || '');
+      deleteBtn.disabled = !(p.length > 0 && c === 'DELETE');
+    }
+    if (deletePasswordEl) deletePasswordEl.addEventListener('input', updateDeleteBtn);
+    if (deleteConfirmEl) deleteConfirmEl.addEventListener('input', updateDeleteBtn);
+    updateDeleteBtn();
+
+    if (deleteBtn) {
+      deleteBtn.addEventListener('click', async () => {
+        const errEl = $('deleteError');
+        if (errEl) errEl.style.display = 'none';
+        const password = String(deletePasswordEl?.value || '');
+        const confirm = String(deleteConfirmEl?.value || '');
+        try {
+          deleteBtn.disabled = true;
+          const res = await fetch('/api/auth/delete-account', {
+            method: 'POST',
+            headers: {
+              'Authorization': 'Bearer ' + token,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ password, confirm }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || data.message || ('HTTP ' + res.status));
+          localStorage.removeItem('token');
+          window.location.href = '/';
+        } catch (e) {
+          if (errEl) {
+            errEl.textContent = String(e.message || e);
+            errEl.style.display = 'block';
+          }
+          updateDeleteBtn();
+        }
+      });
+    }
+
     // Sidebar navigation + route switching
     function routeFromHash() {
       const h = (window.location.hash || '').replace('#', '').trim();
@@ -818,7 +1284,10 @@
     window.addEventListener('hashchange', () => setRoute(routeFromHash()));
     window.addEventListener('resize', () => {
       if (currentRoute === 'overview' && Array.isArray(dailyPoints) && dailyPoints.length > 0) {
-        drawDailyTokensChart(dailyPoints);
+        drawDailyTokensChart(dailyPoints, 'dailyTokensChart');
+      }
+      if (currentRoute === 'usage' && Array.isArray(dailyPoints) && dailyPoints.length > 0) {
+        drawDailyTokensChart(dailyPoints, 'dailyTokensChartUsage');
       }
     });
 

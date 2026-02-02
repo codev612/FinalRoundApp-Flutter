@@ -67,11 +67,30 @@ class SpeechToTextProvider extends ChangeNotifier {
   
   // Auto ask callback - called when a question is detected from others
   Function(String)? _onQuestionDetected;
+  Future<void> Function()? _onAuthInvalidated;
 
   bool get isRecording => _isRecording;
   
   void setAutoAskCallback(Function(String)? callback) {
     _onQuestionDetected = callback;
+  }
+
+  void setOnAuthInvalidated(Future<void> Function()? cb) {
+    _onAuthInvalidated = cb;
+    _transcriptionService?.setOnSessionRevoked(() {
+      final f = _onAuthInvalidated;
+      if (f != null) {
+        // ignore: unawaited_futures
+        f();
+      }
+    });
+    _aiService?.setOnSessionRevoked(() {
+      final f = _onAuthInvalidated;
+      if (f != null) {
+        // ignore: unawaited_futures
+        f();
+      }
+    });
   }
   bool get isConnected => _isConnected;
   bool get isStopping => _isStopping;
@@ -373,6 +392,24 @@ class SpeechToTextProvider extends ChangeNotifier {
       }
     } catch (_) {}
     _aiService = AiService(httpBaseUrl: httpBaseUrl, aiWsUrl: aiWsUrl, authToken: authToken);
+    
+    // If we already have an auth invalidation callback, wire it into the services.
+    if (_onAuthInvalidated != null) {
+      _transcriptionService?.setOnSessionRevoked(() {
+        final f = _onAuthInvalidated;
+        if (f != null) {
+          // ignore: unawaited_futures
+          f();
+        }
+      });
+      _aiService?.setOnSessionRevoked(() {
+        final f = _onAuthInvalidated;
+        if (f != null) {
+          // ignore: unawaited_futures
+          f();
+        }
+      });
+    }
     
     // Cancel any existing subscription first
     _transcriptSubscription?.cancel();
