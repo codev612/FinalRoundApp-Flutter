@@ -3,6 +3,24 @@ if (!token) window.location.href = '/auth/signin';
 
 const $ = (id) => document.getElementById(id);
 
+function _parseJwt(tokenStr) {
+  try {
+    const parts = String(tokenStr || '').split('.');
+    if (parts.length < 2) return null;
+    // base64url decode
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
+    const json = atob(b64 + pad);
+    return JSON.parse(json);
+  } catch (_) {
+    return null;
+  }
+}
+
+const _jwt = _parseJwt(token);
+const userEmail = typeof _jwt?.email === 'string' ? _jwt.email : '';
+const userAvatarText = (userEmail || 'U').trim().slice(0, 1).toUpperCase();
+
 const planOffers = [
   { key: 'free', name: 'Free', minutes: 600, tokens: 50000, requests: 200, summary: false },
   { key: 'pro', name: 'Pro', minutes: 1500, tokens: 500000, requests: 5000, summary: true },

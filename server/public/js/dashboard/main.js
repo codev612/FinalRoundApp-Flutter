@@ -60,7 +60,9 @@ async function load() {
   const refreshBtn = $('refreshBtn');
   if (refreshBtn) {
     refreshBtn.disabled = true;
-    refreshBtn.textContent = 'Refreshing…';
+    refreshBtn.classList.add('loading');
+    refreshBtn.setAttribute('aria-busy', 'true');
+    refreshBtn.setAttribute('title', 'Refreshing…');
   }
   billingInfoLoaded = false;
 
@@ -72,6 +74,22 @@ async function load() {
     if (!res.ok) {
       const msg = data.error || data.message || ('HTTP ' + res.status);
       throw new Error(msg);
+    }
+
+    // User identity (name/email) for avatar dropdown.
+    try {
+      const name = String(data?.user?.name || '').trim();
+      const email = String(data?.user?.email || userEmail || '').trim();
+      const userNameTextEl = $('userNameText');
+      const userEmailTextEl = $('userEmailText');
+      const userAvatarTextEl = $('userAvatarText');
+      const fallbackName = email ? String(email.split('@')[0] || '').trim() : '';
+      if (userNameTextEl) userNameTextEl.textContent = name || fallbackName || '—';
+      if (userEmailTextEl) userEmailTextEl.textContent = email || '—';
+      const avatarSeed = (name || fallbackName || email || 'U').trim();
+      if (userAvatarTextEl) userAvatarTextEl.textContent = (avatarSeed.slice(0, 1) || 'U').toUpperCase();
+    } catch (_) {
+      // ignore
     }
 
     setPeriodText(data);
@@ -134,20 +152,83 @@ async function load() {
   } finally {
     if (refreshBtn) {
       refreshBtn.disabled = false;
-      refreshBtn.textContent = 'Refresh';
+      refreshBtn.classList.remove('loading');
+      refreshBtn.removeAttribute('aria-busy');
+      refreshBtn.setAttribute('title', 'Refresh');
     }
   }
 }
 
 // Wire events + init after DOM is parsed (this file is loaded with defer).
 (() => {
-  const signOutBtn = $('signOutBtn');
-  if (signOutBtn) {
-    signOutBtn.addEventListener('click', () => {
-      localStorage.removeItem('token');
-      window.location.href = '/';
-    });
+  // Responsive sidebar drawer (mobile)
+  const appRoot = $('appRoot');
+  const sidebarToggleBtn = $('sidebarToggleBtn');
+  const sidebarCloseBtn = $('sidebarCloseBtn');
+  const sidebarBackdrop = $('sidebarBackdrop');
+
+  function isSidebarOpen() {
+    return !!(appRoot && appRoot.classList.contains('sidebarOpen'));
   }
+  function setSidebarOpen(open) {
+    if (!appRoot) return;
+    appRoot.classList.toggle('sidebarOpen', !!open);
+    if (sidebarToggleBtn) sidebarToggleBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (sidebarBackdrop) sidebarBackdrop.setAttribute('aria-hidden', open ? 'false' : 'true');
+  }
+  function toggleSidebar() { setSidebarOpen(!isSidebarOpen()); }
+
+  if (sidebarToggleBtn) sidebarToggleBtn.addEventListener('click', (e) => { e.preventDefault(); toggleSidebar(); });
+  if (sidebarCloseBtn) sidebarCloseBtn.addEventListener('click', (e) => { e.preventDefault(); setSidebarOpen(false); });
+  if (sidebarBackdrop) sidebarBackdrop.addEventListener('click', () => setSidebarOpen(false));
+
+  function signOut() {
+    localStorage.removeItem('token');
+    window.location.href = '/';
+  }
+
+  // Avatar + user menu
+  const userMenuWrap = $('userMenuWrap');
+  const userMenuBtn = $('userMenuBtn');
+  const userMenu = $('userMenu');
+  const userAvatarTextEl = $('userAvatarText');
+  const userNameTextEl = $('userNameText');
+  const userEmailTextEl = $('userEmailText');
+  const menuSignOut = $('menuSignOut');
+
+  const emailFallback = (typeof userEmail === 'string' ? userEmail : '').trim();
+  const nameFallback = emailFallback ? String(emailFallback.split('@')[0] || '').trim() : '';
+  if (userNameTextEl) userNameTextEl.textContent = nameFallback || '—';
+  if (userEmailTextEl) userEmailTextEl.textContent = emailFallback || '—';
+  if (userAvatarTextEl) userAvatarTextEl.textContent = (typeof userAvatarText === 'string' && userAvatarText.length ? userAvatarText : 'U');
+
+  function closeUserMenu() {
+    if (!userMenuWrap || !userMenuBtn || !userMenu) return;
+    userMenuWrap.classList.remove('open');
+    userMenuBtn.setAttribute('aria-expanded', 'false');
+    userMenu.setAttribute('aria-hidden', 'true');
+  }
+  function toggleUserMenu() {
+    if (!userMenuWrap || !userMenuBtn || !userMenu) return;
+    const open = userMenuWrap.classList.toggle('open');
+    userMenuBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    userMenu.setAttribute('aria-hidden', open ? 'false' : 'true');
+  }
+
+  if (userMenuBtn) userMenuBtn.addEventListener('click', (e) => { e.preventDefault(); toggleUserMenu(); });
+  if (menuSignOut) menuSignOut.addEventListener('click', () => signOut());
+  document.addEventListener('click', (e) => {
+    if (!userMenuWrap) return;
+    const t = e.target;
+    if (!(t instanceof Node)) return;
+    if (!userMenuWrap.contains(t)) closeUserMenu();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeUserMenu();
+      setSidebarOpen(false);
+    }
+  });
 
   const refreshBtn = $('refreshBtn');
   if (refreshBtn) refreshBtn.addEventListener('click', load);
@@ -233,7 +314,10 @@ async function load() {
     const h = (window.location.hash || '').replace('#', '').trim();
     return h || 'overview';
   }
-  window.addEventListener('hashchange', () => setRoute(routeFromHash()));
+  window.addEventListener('hashchange', () => {
+    setRoute(routeFromHash());
+    setSidebarOpen(false);
+  });
   window.addEventListener('resize', () => {
     if (currentRoute === 'overview' && Array.isArray(dailyPoints) && dailyPoints.length > 0) {
       drawDailyTokensChart(dailyPoints, 'dailyTokensChart');
@@ -301,6 +385,7 @@ async function load() {
       const quick = e.target.closest('a[data-route-link]');
       if (a) {
         // Allow hash navigation; route handler will switch view.
+        setSidebarOpen(false);
         return;
       }
       if (quick) {

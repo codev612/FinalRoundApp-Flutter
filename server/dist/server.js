@@ -453,6 +453,10 @@ app.get('/api/billing/me', authenticate, async (req, res) => {
             };
         }
         return res.json({
+            user: {
+                name: user?.name || '',
+                email: user?.email || (req.user?.email || ''),
+            },
             plan: ent.plan,
             billingPeriod: {
                 start: start.toISOString(),
