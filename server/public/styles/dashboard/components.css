@@ -1,0 +1,191 @@
+.actions { display: flex; gap: 10px; }
+.btn {
+  border: none;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: transform 0.12s ease, opacity 0.12s ease;
+}
+.btn:hover { transform: translateY(-1px); }
+.btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+.btn-secondary { background: rgba(255,255,255,0.10); color: white; border: 1px solid rgba(255,255,255,0.16); }
+.btn-primary { background: #8b5cf6; color: white; }
+.btn-ghost { background: transparent; color: rgba(255,255,255,0.90); border: 1px solid rgba(255,255,255,0.16); }
+
+.card {
+  background: rgba(255,255,255,0.95);
+  border-radius: 16px;
+  box-shadow: 0 24px 70px rgba(0,0,0,0.30);
+  padding: 16px;
+  margin-bottom: 14px;
+}
+.muted { color: #555; font-size: 13px; }
+.error { background: #fee; color: #b00020; border: 1px solid #f3b; padding: 10px; border-radius: 10px; display: none; margin-top: 10px; }
+
+.kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 10px; }
+@media (max-width: 860px) { .kpis { grid-template-columns: 1fr; } }
+.kpi { padding: 12px; border-radius: 14px; background: #f6f6fb; border: 1px solid #e8e8f4; }
+.kpi .label { font-size: 12px; color: #555; }
+.kpi .value { font-size: 18px; font-weight: 900; margin-top: 4px; }
+.bar { height: 10px; background: #eee; border-radius: 999px; overflow: hidden; margin-top: 8px; }
+.bar > div { height: 100%; background: linear-gradient(90deg, #8b5cf6, #667eea); width: 0%; }
+
+.twoCol { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 860px) { .twoCol { grid-template-columns: 1fr; } }
+
+.plans { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 10px; }
+@media (max-width: 860px) { .plans { grid-template-columns: 1fr; } }
+.plan { border: 1px solid #e8e8f4; border-radius: 16px; padding: 12px; background: #fff; }
+.plan.current { border: 2px solid #8b5cf6; }
+.plan .name { font-weight: 900; }
+.badge { display: inline-block; font-size: 11px; padding: 4px 8px; border-radius: 999px; background: rgba(139,92,246,0.14); color: #4c1d95; margin-left: 8px; border: 1px solid rgba(139,92,246,0.25); font-weight: 900; }
+.plan ul { margin-top: 10px; padding-left: 16px; color: #333; font-size: 13px; line-height: 1.6; }
+.plan .cta { margin-top: 10px; width: 100%; }
+
+.seg {
+  display: inline-flex;
+  gap: 0;
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid rgba(0,0,0,0.12);
+  background: rgba(0,0,0,0.03);
+}
+.seg button {
+  appearance: none;
+  border: none;
+  padding: 8px 10px;
+  font-weight: 900;
+  font-size: 12px;
+  cursor: pointer;
+  background: transparent;
+  color: rgba(0,0,0,0.70);
+}
+.seg button.active {
+  background: rgba(139,92,246,0.14);
+  color: #4c1d95;
+}
+
+.btn-sm { padding: 8px 10px; font-size: 12px; border-radius: 12px; }
+.btn-apply {
+  background: #8b5cf6;
+  color: white;
+  border: 1px solid rgba(139,92,246,0.55);
+  box-shadow: 0 10px 26px rgba(139,92,246,0.30);
+}
+.btn-apply:hover { transform: translateY(-1px); }
+.btn-apply:active { transform: translateY(0px); opacity: 0.95; }
+.btn-revoke {
+  background: rgba(239,68,68,0.12);
+  color: #991b1b;
+  border: 1px solid rgba(239,68,68,0.35);
+}
+.btn-revoke:hover { background: rgba(239,68,68,0.18); transform: translateY(-1px); }
+.btn-revoke:active { transform: translateY(0px); opacity: 0.95; }
+.btn-light {
+  background: rgba(0,0,0,0.05);
+  color: #111;
+  border: 1px solid rgba(0,0,0,0.12);
+}
+.btn-light:hover { background: rgba(0,0,0,0.08); transform: translateY(-1px); }
+.dateRange { display: inline-flex; align-items: center; gap: 8px; }
+.dateRange .arrow { color: rgba(0,0,0,0.50); font-weight: 900; font-size: 12px; }
+.dateRange input[type="date"] {
+  appearance: none;
+  border: 1px solid rgba(0,0,0,0.12);
+  background: rgba(255,255,255,0.96);
+  border-radius: 12px;
+  padding: 7px 10px;
+  font-weight: 900;
+  font-size: 12px;
+  color: #111;
+  line-height: 1.2;
+}
+
+.input {
+  appearance: none;
+  border: 1px solid rgba(0,0,0,0.12);
+  background: rgba(255,255,255,0.96);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-weight: 800;
+  font-size: 13px;
+  color: #111;
+  min-width: 220px;
+}
+.formRow { display:flex; gap:10px; flex-wrap:wrap; margin-top: 10px; align-items: center; }
+
+.sessionsList { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.sessionRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid #e8e8f4;
+  background: #fff;
+}
+.sessionMeta { min-width: 0; flex: 1 1 auto; }
+.sessionTitle { display:flex; align-items:center; gap: 8px; flex-wrap: wrap; font-weight: 900; }
+.sessionSub { margin-top: 4px; font-size: 12px; color: #555; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.badgeSmall {
+  display: inline-block;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(0,0,0,0.10);
+  font-weight: 900;
+}
+.badgeCurrent { background: rgba(139,92,246,0.14); color: #4c1d95; border-color: rgba(139,92,246,0.25); }
+.badgeRevoked { background: rgba(0,0,0,0.06); color: rgba(0,0,0,0.55); }
+.sessionActions { display:flex; gap: 8px; align-items: center; flex: 0 0 auto; }
+
+.btn-danger { background: #ef4444; color: white; border: 1px solid rgba(239,68,68,0.55); }
+.btn-danger:hover { transform: translateY(-1px); }
+.btn-danger:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+.dangerBox {
+  margin-top: 10px;
+  border-radius: 14px;
+  padding: 12px;
+  background: #fff1f2;
+  border: 1px solid #fecdd3;
+  color: #9f1239;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.tableWrap { width: 100%; overflow-x: auto; }
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+  border: 1px solid #e8e8f4;
+  border-radius: 14px;
+  overflow: hidden;
+}
+.table th, .table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid #f0f0f7;
+  font-size: 13px;
+}
+.table th {
+  background: rgba(0,0,0,0.03);
+  font-weight: 900;
+  color: #111;
+  white-space: nowrap;
+}
+.table th.num, .table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.table tr:last-child td { border-bottom: none; }
+
+.view { display: none; }
+.view.active { display: block; }
+
+.placeholder {
+  border: 1px dashed rgba(0,0,0,0.18);
+  background: rgba(0,0,0,0.02);
+  border-radius: 14px;
+  padding: 14px;
+  color: #333;
+}
