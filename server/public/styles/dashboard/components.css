@@ -96,6 +96,18 @@
 }
 .menuItem:hover { background: rgba(139,92,246,0.10); }
 
+.success {
+  background: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+  padding: 10px;
+  border-radius: 10px;
+  display: none;
+  margin-top: 10px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .card {
   background: rgba(255,255,255,0.95);
   border-radius: 16px;

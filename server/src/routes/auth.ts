@@ -724,10 +724,17 @@ router.get('/me', authenticate, async (req: AuthRequest, res: Response) => {
     }
 
     const user = await getUserById(String(req.user.userId));
+    const fullUser = await getUserByIdFull(String(req.user.userId));
     
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
+
+    const pendingEmail = fullUser?.pending_email ?? null;
+    const step =
+      pendingEmail
+        ? (fullUser?.current_email_code ? 'verify_current' : 'verify_new')
+        : null;
 
     return res.json({
       user: {
@@ -736,6 +743,10 @@ router.get('/me', authenticate, async (req: AuthRequest, res: Response) => {
         name: user.name,
         email_verified: user.email_verified,
         created_at: user.created_at,
+      },
+      emailChange: {
+        pendingEmail,
+        step,
       },
     });
   } catch (error) {

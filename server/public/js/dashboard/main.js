@@ -2,6 +2,7 @@ function routeMeta(route) {
   switch (route) {
     case 'overview': return { title: 'Overview', sub: 'Plan snapshot and quick actions' };
     case 'usage': return { title: 'Usage', sub: 'Plan, limits, and usage details' };
+    case 'profile': return { title: 'Profile', sub: 'Update your account details' };
     case 'settings': return { title: 'Settings', sub: 'Preferences and account settings' };
     case 'spending': return { title: 'Spending', sub: 'Costs and usage spend' };
     case 'billing': return { title: 'Billing & invoices', sub: 'Payment method and invoices' };
@@ -48,6 +49,10 @@ function setRoute(route) {
 
   if (r === 'settings') {
     loadAuthSessions();
+  }
+
+  if (r === 'profile') {
+    if (typeof loadProfileMe === 'function') loadProfileMe();
   }
 
   if (r === 'billing') {
