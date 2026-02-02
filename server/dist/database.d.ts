@@ -166,6 +166,10 @@ export declare const getUserApiUsageStats: (userId: string, startDate?: Date, en
         tokens: number;
     }>;
 }>;
+export declare const getUserDailyAiTokenUsage: (userId: string, startDate: Date, endDate: Date) => Promise<Array<{
+    date: string;
+    tokens: number;
+}>>;
 export interface TranscriptionUsage {
     _id?: ObjectId;
     userId: string;

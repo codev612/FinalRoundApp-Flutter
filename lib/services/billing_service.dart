@@ -11,6 +11,13 @@ class BillingInfo {
   final int remainingMinutes;
   final bool canUseSummary;
   final List<String> allowedModels;
+  final int aiLimitTokens;
+  final int aiUsedTokens;
+  final int aiRemainingTokens;
+  final int? aiLimitRequests;
+  final int aiUsedRequests;
+  final int? aiRemainingRequests;
+  final Map<String, Map<String, int>> aiByModel; // model -> { usedTokens, requests, limitTokens?, remainingTokens? }
 
   BillingInfo({
     required this.plan,
@@ -21,12 +28,39 @@ class BillingInfo {
     required this.remainingMinutes,
     required this.canUseSummary,
     required this.allowedModels,
+    required this.aiLimitTokens,
+    required this.aiUsedTokens,
+    required this.aiRemainingTokens,
+    required this.aiLimitRequests,
+    required this.aiUsedRequests,
+    required this.aiRemainingRequests,
+    required this.aiByModel,
   });
 
   factory BillingInfo.fromJson(Map<String, dynamic> json) {
     final bp = (json['billingPeriod'] as Map<String, dynamic>? ?? const {});
     final transcription = (json['transcription'] as Map<String, dynamic>? ?? const {});
     final ai = (json['ai'] as Map<String, dynamic>? ?? const {});
+
+    final rawByModel = ai['byModel'];
+    final Map<String, Map<String, int>> byModel = {};
+    if (rawByModel is Map) {
+      for (final entry in rawByModel.entries) {
+        final k = entry.key?.toString();
+        final v = entry.value;
+        if (k == null || k.trim().isEmpty) continue;
+        if (v is! Map) continue;
+        int getInt(String key) => (v[key] as num?)?.toInt() ?? 0;
+        final m = <String, int>{
+          'usedTokens': getInt('usedTokens'),
+          'requests': getInt('requests'),
+        };
+        if (v['limitTokens'] is num) m['limitTokens'] = (v['limitTokens'] as num).toInt();
+        if (v['remainingTokens'] is num) m['remainingTokens'] = (v['remainingTokens'] as num).toInt();
+        byModel[k] = m;
+      }
+    }
+
     return BillingInfo(
       plan: (json['plan'] as String?) ?? 'free',
       periodStartUtc: DateTime.parse((bp['start'] as String?) ?? DateTime.now().toUtc().toIso8601String()),
@@ -38,6 +72,13 @@ class BillingInfo {
       allowedModels: ((ai['allowedModels'] as List?) ?? const [])
           .whereType<String>()
           .toList(growable: false),
+      aiLimitTokens: (ai['limitTokens'] as num?)?.toInt() ?? 0,
+      aiUsedTokens: (ai['usedTokens'] as num?)?.toInt() ?? 0,
+      aiRemainingTokens: (ai['remainingTokens'] as num?)?.toInt() ?? 0,
+      aiLimitRequests: (ai['limitRequests'] as num?)?.toInt(),
+      aiUsedRequests: (ai['usedRequests'] as num?)?.toInt() ?? 0,
+      aiRemainingRequests: (ai['remainingRequests'] as num?)?.toInt(),
+      aiByModel: byModel,
     );
   }
 }

@@ -7,7 +7,7 @@ import cors from 'cors';
 import { createServer } from 'http';
 import authRoutes from './routes/auth.js';
 import { authenticate, verifyToken } from './auth.js';
-import { connectDB, closeDB, createMeetingSession, getMeetingSession, updateMeetingSession, listMeetingSessions, deleteMeetingSession, getModeConfigs, saveModeConfig, getCustomModes, saveCustomModes, deleteCustomMode, getQuestionTemplates, saveQuestionTemplates, deleteQuestionTemplate, saveApiUsage, getUserApiUsage, getUserApiUsageStats, getUserByIdFull, saveTranscriptionUsage, getTranscriptionUsageMsForPeriod, } from './database.js';
+import { connectDB, closeDB, createMeetingSession, getMeetingSession, updateMeetingSession, listMeetingSessions, deleteMeetingSession, getModeConfigs, saveModeConfig, getCustomModes, saveCustomModes, deleteCustomMode, getQuestionTemplates, saveQuestionTemplates, deleteQuestionTemplate, saveApiUsage, getUserApiUsage, getUserApiUsageStats, getUserDailyAiTokenUsage, getUserByIdFull, saveTranscriptionUsage, getTranscriptionUsageMsForPeriod, } from './database.js';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import fs from 'fs';
@@ -51,9 +51,19 @@ app.use(express.json({ limit: '8mb' }));
 // Serve static files from public directory
 const publicDir = join(__dirname, '../public');
 app.use(express.static(publicDir));
+// Simple website routes (clean URLs)
+const servePublicHtml = (relativePath) => (_req, res) => {
+    return res.sendFile(join(publicDir, relativePath));
+};
+app.get('/', servePublicHtml('index.html'));
+app.get('/dashboard', servePublicHtml('dashboard.html'));
+app.get('/auth/signin', servePublicHtml('auth/signin.html'));
+app.get('/auth/signup', servePublicHtml('auth/signup.html'));
+app.get('/auth/forgot-password', servePublicHtml('auth/forgot-password.html'));
+app.get('/auth/reset-password', servePublicHtml('auth/reset-password.html'));
 // Health check endpoint
 app.get('/health', (_req, res) => {
-    res.json({ status: 'ok', message: 'HearNow backend is running' });
+    res.json({ status: 'ok', message: 'FinalRoundApp backend is running' });
 });
 // Authentication routes
 app.use('/api/auth', authRoutes);
@@ -467,6 +477,103 @@ app.get('/api/billing/me', authenticate, async (req, res) => {
     catch (error) {
         console.error('Error fetching billing info:', error);
         return res.status(500).json({ error: error.message || 'Failed to fetch billing info' });
+    }
+});
+app.get('/api/billing/ai-daily-tokens', authenticate, async (req, res) => {
+    try {
+        const userId = req.user.userId;
+        const { start, end } = getCurrentBillingPeriodUtc();
+        const parseYmdToUtcDayStart = (s) => {
+            const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s.trim());
+            if (!m)
+                return null;
+            const y = parseInt(m[1], 10);
+            const mo = parseInt(m[2], 10);
+            const d = parseInt(m[3], 10);
+            if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d))
+                return null;
+            if (mo < 1 || mo > 12)
+                return null;
+            if (d < 1 || d > 31)
+                return null;
+            const dt = new Date(Date.UTC(y, mo - 1, d, 0, 0, 0, 0));
+            // Guard against invalid dates like 2026-02-31 rolling over.
+            if (dt.getUTCFullYear() !== y || (dt.getUTCMonth() + 1) !== mo || dt.getUTCDate() !== d)
+                return null;
+            return dt;
+        };
+        const daysParam = req.query?.days;
+        const parsedDays = typeof daysParam === 'string' ? parseInt(daysParam, 10) : NaN;
+        const rangeDays = Number.isFinite(parsedDays) ? parsedDays : undefined;
+        const startParam = req.query?.start;
+        const endParam = req.query?.end;
+        const startStr = typeof startParam === 'string' ? startParam : null;
+        const endStr = typeof endParam === 'string' ? endParam : null;
+        const customStartDayUtc = startStr ? parseYmdToUtcDayStart(startStr) : null;
+        const customEndDayUtc = endStr ? parseYmdToUtcDayStart(endStr) : null;
+        const hasCustomRange = !!(customStartDayUtc && customEndDayUtc && customStartDayUtc <= customEndDayUtc);
+        const now = new Date();
+        const hasDays = !hasCustomRange && typeof rangeDays === 'number' && rangeDays > 0;
+        // When days=N is provided, return EXACTLY N daily buckets ending today (UTC),
+        // clamping the DB query to the billing period but still returning 0-filled days
+        // for dates outside the billing window.
+        // If custom range is provided, return buckets for exactly that [start..end] (inclusive).
+        // If days is omitted, return the full billing period (including future 0-days).
+        const rangeEnd = hasCustomRange ? now : (hasDays ? (now < end ? now : end) : end);
+        const endDayUtc = hasCustomRange
+            ? customEndDayUtc
+            : new Date(Date.UTC(rangeEnd.getUTCFullYear(), rangeEnd.getUTCMonth(), rangeEnd.getUTCDate(), 0, 0, 0, 0));
+        let fillStartDayUtc = start;
+        if (hasCustomRange) {
+            fillStartDayUtc = customStartDayUtc;
+        }
+        else if (hasDays) {
+            fillStartDayUtc = new Date(endDayUtc);
+            fillStartDayUtc.setUTCDate(fillStartDayUtc.getUTCDate() - (rangeDays - 1));
+        }
+        const queryStart = hasCustomRange
+            ? fillStartDayUtc
+            : ((hasDays ? (fillStartDayUtc < start ? start : fillStartDayUtc) : start));
+        // For custom range: query up to end-of-day inclusive for the selected end date.
+        // Clamp to "now" so we don't query future timestamps.
+        const customEndInclusive = hasCustomRange
+            ? new Date(Date.UTC(endDayUtc.getUTCFullYear(), endDayUtc.getUTCMonth(), endDayUtc.getUTCDate(), 23, 59, 59, 999))
+            : null;
+        const queryEnd = hasCustomRange
+            ? new Date(Math.min(now.getTime(), customEndInclusive.getTime()))
+            : rangeEnd;
+        const rows = await getUserDailyAiTokenUsage(userId, queryStart, queryEnd);
+        const byDay = new Map(rows.map((r) => [r.date, r.tokens]));
+        const days = [];
+        // Fill missing days with 0 so the chart is stable.
+        const cur = new Date(Date.UTC((hasCustomRange || hasDays ? fillStartDayUtc : start).getUTCFullYear(), (hasCustomRange || hasDays ? fillStartDayUtc : start).getUTCMonth(), (hasCustomRange || hasDays ? fillStartDayUtc : start).getUTCDate(), 0, 0, 0, 0));
+        const endDay = (hasCustomRange || hasDays)
+            ? endDayUtc
+            : new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate(), 0, 0, 0, 0));
+        // If custom/days range is provided, include endDay itself.
+        // If no range is provided (full period), keep end exclusive (endDay is the first day of next period).
+        while ((hasCustomRange || hasDays) ? (cur <= endDay) : (cur < endDay)) {
+            const y = cur.getUTCFullYear();
+            const m = String(cur.getUTCMonth() + 1).padStart(2, '0');
+            const d = String(cur.getUTCDate()).padStart(2, '0');
+            const key = `${y}-${m}-${d}`;
+            days.push({ date: key, tokens: byDay.get(key) ?? 0 });
+            cur.setUTCDate(cur.getUTCDate() + 1);
+        }
+        return res.json({
+            billingPeriod: { start: start.toISOString(), end: end.toISOString() },
+            range: {
+                start: ((hasCustomRange || hasDays) ? fillStartDayUtc : start).toISOString(),
+                end: hasCustomRange ? endDayUtc.toISOString() : rangeEnd.toISOString(),
+                days: hasDays ? (rangeDays ?? null) : null,
+                ...(hasCustomRange ? { custom: { start: startStr, end: endStr } } : {}),
+            },
+            days,
+        });
+    }
+    catch (error) {
+        console.error('Error fetching daily AI token usage:', error);
+        return res.status(500).json({ error: error.message || 'Failed to fetch daily AI token usage' });
     }
 });
 app.post('/api/billing/transcription-usage', authenticate, async (req, res) => {

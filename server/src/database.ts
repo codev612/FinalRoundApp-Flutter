@@ -1009,6 +1009,48 @@ export const getUserApiUsageStats = async (
   return stats;
 };
 
+export const getUserDailyAiTokenUsage = async (
+  userId: string,
+  startDate: Date,
+  endDate: Date
+): Promise<Array<{ date: string; tokens: number }>> => {
+  await connectDB();
+  const currentDb = db;
+  if (!currentDb) throw new Error('Database not connected');
+  const collection = getApiUsageCollection(currentDb);
+
+  const pipeline: any[] = [
+    {
+      $match: {
+        userId,
+        timestamp: { $gte: startDate, $lte: endDate },
+      },
+    },
+    {
+      $project: {
+        day: {
+          $dateToString: {
+            format: '%Y-%m-%d',
+            date: '$timestamp',
+            timezone: 'UTC',
+          },
+        },
+        totalTokens: 1,
+      },
+    },
+    {
+      $group: {
+        _id: '$day',
+        tokens: { $sum: '$totalTokens' },
+      },
+    },
+    { $sort: { _id: 1 } },
+  ];
+
+  const rows = await collection.aggregate(pipeline).toArray();
+  return rows.map((r: any) => ({ date: String(r._id), tokens: Number(r.tokens ?? 0) }));
+};
+
 // Transcription usage tracking (for pricing tiers / minute limits)
 export interface TranscriptionUsage {
   _id?: ObjectId;

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sign Up - HearNow</title>
+    <title>Sign Up - FinalRoundApp</title>
     <style>
         * {
             margin: 0;
@@ -38,6 +38,14 @@
             text-align: center;
         }
         .form-group {
+            margin-bottom: 20px;
+        }
+        .row {
+            display: flex;
+            gap: 12px;
+        }
+        .row .form-group {
+            flex: 1;
             margin-bottom: 20px;
         }
         label {
@@ -112,19 +120,29 @@
 <body>
     <div class="container">
         <h1>Create Account</h1>
-        <p class="subtitle">Sign up to get started with HearNow</p>
+        <p class="subtitle">Sign up to get started with FinalRoundApp</p>
         
         <div class="error" id="error"></div>
         <div class="success" id="success"></div>
         
         <form id="signupForm">
+            <div class="row">
+                <div class="form-group">
+                    <label for="firstName">First name</label>
+                    <input type="text" id="firstName" name="firstName" required minlength="1" autocomplete="given-name">
+                </div>
+                <div class="form-group">
+                    <label for="lastName">Last name</label>
+                    <input type="text" id="lastName" name="lastName" required minlength="1" autocomplete="family-name">
+                </div>
+            </div>
             <div class="form-group">
                 <label for="email">Email</label>
-                <input type="email" id="email" name="email" required>
+                <input type="email" id="email" name="email" required autocomplete="email">
             </div>
             <div class="form-group">
                 <label for="password">Password</label>
-                <input type="password" id="password" name="password" required minlength="8">
+                <input type="password" id="password" name="password" required minlength="8" autocomplete="new-password">
             </div>
             <button type="submit" class="btn" id="submitBtn">Sign Up</button>
         </form>
@@ -149,9 +167,23 @@
             submitBtn.textContent = 'Creating Account...';
 
             const formData = new FormData(form);
+            const firstName = String(formData.get('firstName') || '').trim();
+            const lastName = String(formData.get('lastName') || '').trim();
+            const email = String(formData.get('email') || '').trim();
+            const password = String(formData.get('password') || '');
+
+            if (!firstName || !lastName) {
+                errorDiv.textContent = 'First name and last name are required';
+                errorDiv.style.display = 'block';
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Sign Up';
+                return;
+            }
+
             const data = {
-                email: formData.get('email'),
-                password: formData.get('password')
+                email,
+                name: (firstName + ' ' + lastName).trim(),
+                password
             };
 
             try {

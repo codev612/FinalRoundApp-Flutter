@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HearNow - Meeting Assistant</title>
+    <title>FinalRoundApp - Meeting Assistant</title>
     <style>
         * {
             margin: 0;
@@ -74,12 +74,26 @@
 </head>
 <body>
     <div class="container">
-        <h1>🎤 HearNow</h1>
-        <p>Your intelligent meeting assistant powered by AI</p>
-        <div class="button-group">
+        <h1>FinalRoundApp</h1>
+        <p>Your interview & meeting copilot powered by AI</p>
+        <div class="button-group" id="buttons">
             <a href="/auth/signin" class="btn btn-primary">Sign In</a>
             <a href="/auth/signup" class="btn btn-secondary">Create Account</a>
         </div>
     </div>
+    <script>
+      const buttons = document.getElementById('buttons');
+      const token = localStorage.getItem('token');
+      if (token) {
+        buttons.innerHTML = `
+          <a href="/dashboard" class="btn btn-primary">Go to Dashboard</a>
+          <button class="btn btn-secondary" id="signOutBtn">Sign Out</button>
+        `;
+        document.getElementById('signOutBtn').addEventListener('click', () => {
+          localStorage.removeItem('token');
+          window.location.reload();
+        });
+      }
+    </script>
 </body>
 </html>

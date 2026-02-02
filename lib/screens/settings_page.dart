@@ -11,6 +11,7 @@ import '../providers/auth_provider.dart';
 import '../providers/theme_provider.dart';
 import '../services/shortcuts_service.dart';
 import '../services/appearance_service.dart';
+import '../services/billing_service.dart';
 import 'email_change_verification_dialog.dart';
 import 'manage_mode_page.dart';
 import 'manage_question_templates_page.dart';
@@ -76,6 +77,12 @@ class _SettingsPageState extends State<SettingsPage> {
                 onTap: () => setState(() => _selectedIndex = 2),
               ),
               _SidebarItem(
+                icon: Icons.credit_card,
+                label: 'Plan & Usage',
+                isSelected: _selectedIndex == 3,
+                onTap: () => setState(() => _selectedIndex = 3),
+              ),
+              _SidebarItem(
                 icon: Icons.tune,
                 label: 'Modes',
                 isSelected: false,
@@ -99,8 +106,8 @@ class _SettingsPageState extends State<SettingsPage> {
                 _SidebarItem(
                   icon: Icons.palette,
                   label: 'Appearance',
-                  isSelected: _selectedIndex == 3,
-                  onTap: () => setState(() => _selectedIndex = 3),
+                  isSelected: _selectedIndex == 4,
+                  onTap: () => setState(() => _selectedIndex = 4),
                 ),
             ],
           ),
@@ -143,7 +150,9 @@ class _SettingsPageState extends State<SettingsPage> {
           case 2:
             return _buildAudioDevicesContent();
           case 3:
-            return Platform.isWindows ? _buildAppearanceContent() : _buildProfileContent();
+            return const _PlanUsageSettings();
+          case 4:
+            return Platform.isWindows ? _buildAppearanceContent() : const _PlanUsageSettings();
           default:
             return _buildProfileContent();
         }
@@ -1480,4 +1489,386 @@ class _ThemeModeCardState extends State<_ThemeModeCard> with TickerProviderState
       ],
     );
   }
+}
+
+class _PlanUsageSettings extends StatefulWidget {
+  const _PlanUsageSettings();
+
+  @override
+  State<_PlanUsageSettings> createState() => _PlanUsageSettingsState();
+}
+
+class _PlanUsageSettingsState extends State<_PlanUsageSettings> {
+  final BillingService _billing = BillingService();
+  bool _loading = false;
+  String? _error;
+  BillingInfo? _info;
+  String? _lastToken;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final token = context.read<AuthProvider>().token;
+    if (token != _lastToken) {
+      _lastToken = token;
+      _billing.setAuthToken(token);
+      _refresh();
+    }
+  }
+
+  Future<void> _refresh() async {
+    if (_loading) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final info = await _billing.getMe();
+      if (!mounted) return;
+      setState(() {
+        _info = info;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+      });
+    } finally {
+      if (!mounted) return;
+      setState(() => _loading = false);
+    }
+  }
+
+  String _planLabel(String plan) {
+    switch (plan.trim().toLowerCase()) {
+      case 'pro_plus':
+        return 'Pro+';
+      case 'pro':
+        return 'Pro';
+      case 'free':
+      default:
+        return 'Free';
+    }
+  }
+
+  String _fmtInt(int n) => n.toString();
+
+  static const List<String> _planOrder = ['free', 'pro', 'pro_plus'];
+
+  // Keep these in sync with server `planEntitlements()` (server/src/server.ts).
+  static const _PlanOffer _freePlan = _PlanOffer(
+    key: 'free',
+    name: 'Free',
+    minutesPerMonth: 600,
+    aiTokensPerMonth: 50000,
+    aiRequestsPerMonth: 200,
+    canUseSummary: false,
+    allowedModels: ['gpt-4.1-mini', 'gpt-4.1'],
+  );
+  static const _PlanOffer _proPlan = _PlanOffer(
+    key: 'pro',
+    name: 'Pro',
+    minutesPerMonth: 1500,
+    aiTokensPerMonth: 500000,
+    aiRequestsPerMonth: 5000,
+    canUseSummary: true,
+    allowedModels: ['gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'],
+  );
+  static const _PlanOffer _proPlusPlan = _PlanOffer(
+    key: 'pro_plus',
+    name: 'Pro+',
+    minutesPerMonth: 6000,
+    aiTokensPerMonth: 2000000,
+    aiRequestsPerMonth: 20000,
+    canUseSummary: true,
+    allowedModels: ['gpt-5.2', 'gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'],
+  );
+
+  List<_PlanOffer> _allPlans() => const [_freePlan, _proPlan, _proPlusPlan];
+
+  int _planRank(String planKey) {
+    final k = planKey.trim().toLowerCase();
+    final idx = _planOrder.indexOf(k);
+    return idx < 0 ? 0 : idx;
+  }
+
+  List<_PlanOffer> _upgradablePlans(String currentPlanKey) {
+    final cur = _planRank(currentPlanKey);
+    return _allPlans().where((p) => _planRank(p.key) >= cur).toList(growable: false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final info = _info;
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Row(
+          children: [
+            const Expanded(
+              child: Text(
+                'Plan & Usage',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+            ),
+            IconButton(
+              tooltip: 'Refresh',
+              onPressed: _loading ? null : _refresh,
+              icon: _loading
+                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.refresh),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        if (_error != null)
+          Card(
+            color: cs.errorContainer,
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  Icon(Icons.error_outline, color: cs.onErrorContainer),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _error!,
+                      style: TextStyle(color: cs.onErrorContainer),
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        if (info == null && _error == null)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 24),
+            child: Center(child: CircularProgressIndicator()),
+          )
+        else if (info != null) ...[
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.workspace_premium),
+              title: Text('Current plan: ${_planLabel(info.plan)}'),
+              subtitle: Text(
+                'Billing period: ${info.periodStartUtc.toLocal().toString().split(".").first} → ${info.periodEndUtc.toLocal().toString().split(".").first}',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text('Plans', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+          const SizedBox(height: 8),
+          ..._upgradablePlans(info.plan).map((p) {
+            final isCurrent = p.key == info.plan.trim().toLowerCase();
+            final isUpgrade = !isCurrent && _planRank(p.key) > _planRank(info.plan);
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Card(
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  side: BorderSide(
+                    color: isCurrent ? cs.primary : cs.outline.withValues(alpha: 0.2),
+                    width: isCurrent ? 2 : 1,
+                  ),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              p.name,
+                              style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+                            ),
+                          ),
+                          if (isCurrent)
+                            Chip(
+                              label: const Text('Current'),
+                              backgroundColor: cs.primary.withValues(alpha: 0.12),
+                              labelStyle: TextStyle(color: cs.primary, fontWeight: FontWeight.w700),
+                              side: BorderSide(color: cs.primary.withValues(alpha: 0.25)),
+                            )
+                          else if (isUpgrade)
+                            FilledButton(
+                              onPressed: () {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('Upgrade flow not wired yet.')),
+                                );
+                              },
+                              child: const Text('Upgrade'),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '${_fmtInt(p.minutesPerMonth)} transcription minutes / month',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '${_fmtInt(p.aiTokensPerMonth)} AI tokens / month • ${_fmtInt(p.aiRequestsPerMonth)} requests / month',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        p.canUseSummary ? 'Summary: enabled' : 'Summary: not included',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: p.allowedModels.map((m) => Chip(label: Text(m))).toList(growable: false),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }),
+          const SizedBox(height: 12),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text('Transcription', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 10),
+                  LinearProgressIndicator(
+                    value: info.limitMinutes <= 0 ? null : (info.usedMinutes / info.limitMinutes).clamp(0, 1),
+                    minHeight: 8,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Used ${_fmtInt(info.usedMinutes)} / ${_fmtInt(info.limitMinutes)} minutes • Remaining ${_fmtInt(info.remainingMinutes)}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text('AI usage', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+                      ),
+                      if (info.canUseSummary == false)
+                        Text('Summary disabled on this plan', style: Theme.of(context).textTheme.labelSmall),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  LinearProgressIndicator(
+                    value: info.aiLimitTokens <= 0 ? null : (info.aiUsedTokens / info.aiLimitTokens).clamp(0, 1),
+                    minHeight: 8,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Tokens: ${_fmtInt(info.aiUsedTokens)} / ${_fmtInt(info.aiLimitTokens)} • Remaining ${_fmtInt(info.aiRemainingTokens)}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  if (info.aiLimitRequests != null) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      'Requests: ${_fmtInt(info.aiUsedRequests)} / ${_fmtInt(info.aiLimitRequests!)}'
+                      '${info.aiRemainingRequests == null ? '' : ' • Remaining ${_fmtInt(info.aiRemainingRequests!)}'}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                  const SizedBox(height: 10),
+                  Text('Allowed models', style: Theme.of(context).textTheme.labelLarge),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: info.allowedModels.isEmpty
+                        ? [const Chip(label: Text('None'))]
+                        : info.allowedModels.map((m) => Chip(label: Text(m))).toList(growable: false),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (info.aiByModel.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text('AI by model', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 8),
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: DataTable(
+                        columns: const [
+                          DataColumn(label: Text('Model')),
+                          DataColumn(label: Text('Tokens')),
+                          DataColumn(label: Text('Requests')),
+                          DataColumn(label: Text('Cap')),
+                          DataColumn(label: Text('Remaining')),
+                        ],
+                        rows: info.aiByModel.entries.map((e) {
+                          final m = e.key;
+                          final v = e.value;
+                          final used = v['usedTokens'] ?? 0;
+                          final req = v['requests'] ?? 0;
+                          final cap = v['limitTokens'];
+                          final rem = v['remainingTokens'];
+                          return DataRow(cells: [
+                            DataCell(Text(m)),
+                            DataCell(Text(_fmtInt(used))),
+                            DataCell(Text(_fmtInt(req))),
+                            DataCell(Text(cap == null ? '—' : _fmtInt(cap))),
+                            DataCell(Text(rem == null ? '—' : _fmtInt(rem))),
+                          ]);
+                        }).toList(growable: false),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ],
+      ],
+    );
+  }
+}
+
+class _PlanOffer {
+  final String key; // free, pro, pro_plus
+  final String name;
+  final int minutesPerMonth;
+  final int aiTokensPerMonth;
+  final int aiRequestsPerMonth;
+  final bool canUseSummary;
+  final List<String> allowedModels;
+
+  const _PlanOffer({
+    required this.key,
+    required this.name,
+    required this.minutesPerMonth,
+    required this.aiTokensPerMonth,
+    required this.aiRequestsPerMonth,
+    required this.canUseSummary,
+    required this.allowedModels,
+  });
 }

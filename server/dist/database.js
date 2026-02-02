@@ -690,6 +690,42 @@ export const getUserApiUsageStats = async (userId, startDate, endDate) => {
     }
     return stats;
 };
+export const getUserDailyAiTokenUsage = async (userId, startDate, endDate) => {
+    await connectDB();
+    const currentDb = db;
+    if (!currentDb)
+        throw new Error('Database not connected');
+    const collection = getApiUsageCollection(currentDb);
+    const pipeline = [
+        {
+            $match: {
+                userId,
+                timestamp: { $gte: startDate, $lte: endDate },
+            },
+        },
+        {
+            $project: {
+                day: {
+                    $dateToString: {
+                        format: '%Y-%m-%d',
+                        date: '$timestamp',
+                        timezone: 'UTC',
+                    },
+                },
+                totalTokens: 1,
+            },
+        },
+        {
+            $group: {
+                _id: '$day',
+                tokens: { $sum: '$totalTokens' },
+            },
+        },
+        { $sort: { _id: 1 } },
+    ];
+    const rows = await collection.aggregate(pipeline).toArray();
+    return rows.map((r) => ({ date: String(r._id), tokens: Number(r.tokens ?? 0) }));
+};
 export const saveTranscriptionUsage = async (userId, durationMs, sessionId) => {
     await connectDB();
     const currentDb = db;

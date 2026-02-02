@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sign In - HearNow</title>
+    <title>Sign In - FinalRoundApp</title>
     <style>
         * {
             margin: 0;
@@ -105,7 +105,7 @@
 <body>
     <div class="container">
         <h1>Sign In</h1>
-        <p class="subtitle">Welcome back to HearNow</p>
+        <p class="subtitle">Welcome back to FinalRoundApp</p>
         
         <div class="error" id="error"></div>
         
@@ -159,8 +159,8 @@
                 if (response.ok) {
                     // Store token in localStorage
                     localStorage.setItem('token', result.token);
-                    // Redirect to dashboard or home
-                    window.location.href = '/';
+                    // Redirect to dashboard
+                    window.location.href = '/dashboard';
                 } else {
                     errorDiv.textContent = result.error || result.message || 'An error occurred';
                     errorDiv.style.display = 'block';

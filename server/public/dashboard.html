@@ -1,0 +1,893 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard - FinalRoundApp</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: #0b0f1a;
+      color: #111;
+      overflow: hidden; /* main area scrolls, sidebar stays fixed */
+    }
+    a { color: inherit; text-decoration: none; }
+
+    .app {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      height: 100vh;
+    }
+    @media (max-width: 980px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+    }
+
+    .sidebar {
+      background: #0f1630;
+      border-right: 1px solid rgba(255,255,255,0.08);
+      padding: 18px 14px;
+      color: rgba(255,255,255,0.92);
+      height: 100vh;
+      overflow-y: auto;
+    }
+    .sidebarBrand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 900;
+      letter-spacing: 0.2px;
+      margin-bottom: 18px;
+      padding: 8px 10px;
+      border-radius: 12px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .logoDot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: #8b5cf6;
+      box-shadow: 0 0 0 4px rgba(139,92,246,0.15);
+    }
+    .nav {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .nav a {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 10px;
+      border-radius: 12px;
+      color: rgba(255,255,255,0.86);
+      border: 1px solid transparent;
+    }
+    .nav .left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+    .nav .icon {
+      width: 18px;
+      height: 18px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: rgba(255,255,255,0.78);
+      flex: 0 0 auto;
+    }
+    .nav a.active .icon { color: white; }
+    .nav .label {
+      font-weight: 750;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .nav a:hover {
+      background: rgba(255,255,255,0.06);
+      border-color: rgba(255,255,255,0.08);
+    }
+    .nav a.active {
+      background: rgba(139,92,246,0.16);
+      border-color: rgba(139,92,246,0.28);
+      color: white;
+    }
+    .nav .pill {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.10);
+      border: 1px solid rgba(255,255,255,0.10);
+      color: rgba(255,255,255,0.85);
+    }
+
+    .main {
+      background: linear-gradient(135deg, #0b0f1a 0%, #141b35 60%, #0b0f1a 100%);
+      padding: 18px;
+      height: 100vh;
+      overflow-y: auto; /* only main content scrolls */
+    }
+    .mainInner {
+      max-width: 1080px;
+      margin: 0 auto;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+      color: white;
+    }
+    .titleBlock { display: flex; flex-direction: column; gap: 2px; }
+    .pageTitle { font-size: 18px; font-weight: 900; letter-spacing: 0.2px; }
+    .pageSub { font-size: 12px; color: rgba(255,255,255,0.70); }
+
+    .actions { display: flex; gap: 10px; }
+    .btn {
+      border: none;
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-weight: 800;
+      cursor: pointer;
+      transition: transform 0.12s ease, opacity 0.12s ease;
+    }
+    .btn:hover { transform: translateY(-1px); }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+    .btn-secondary { background: rgba(255,255,255,0.10); color: white; border: 1px solid rgba(255,255,255,0.16); }
+    .btn-primary { background: #8b5cf6; color: white; }
+    .btn-ghost { background: transparent; color: rgba(255,255,255,0.90); border: 1px solid rgba(255,255,255,0.16); }
+
+    .card {
+      background: rgba(255,255,255,0.95);
+      border-radius: 16px;
+      box-shadow: 0 24px 70px rgba(0,0,0,0.30);
+      padding: 16px;
+      margin-bottom: 14px;
+    }
+    .muted { color: #555; font-size: 13px; }
+    .error { background: #fee; color: #b00020; border: 1px solid #f3b; padding: 10px; border-radius: 10px; display: none; margin-top: 10px; }
+
+    .kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 10px; }
+    @media (max-width: 860px) { .kpis { grid-template-columns: 1fr; } }
+    .kpi { padding: 12px; border-radius: 14px; background: #f6f6fb; border: 1px solid #e8e8f4; }
+    .kpi .label { font-size: 12px; color: #555; }
+    .kpi .value { font-size: 18px; font-weight: 900; margin-top: 4px; }
+    .bar { height: 10px; background: #eee; border-radius: 999px; overflow: hidden; margin-top: 8px; }
+    .bar > div { height: 100%; background: linear-gradient(90deg, #8b5cf6, #667eea); width: 0%; }
+
+    .twoCol { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    @media (max-width: 860px) { .twoCol { grid-template-columns: 1fr; } }
+
+    .plans { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 10px; }
+    @media (max-width: 860px) { .plans { grid-template-columns: 1fr; } }
+    .plan { border: 1px solid #e8e8f4; border-radius: 16px; padding: 12px; background: #fff; }
+    .plan.current { border: 2px solid #8b5cf6; }
+    .plan .name { font-weight: 900; }
+    .badge { display: inline-block; font-size: 11px; padding: 4px 8px; border-radius: 999px; background: rgba(139,92,246,0.14); color: #4c1d95; margin-left: 8px; border: 1px solid rgba(139,92,246,0.25); font-weight: 900; }
+    .plan ul { margin-top: 10px; padding-left: 16px; color: #333; font-size: 13px; line-height: 1.6; }
+    .plan .cta { margin-top: 10px; width: 100%; }
+
+    .seg {
+      display: inline-flex;
+      gap: 0;
+      border-radius: 999px;
+      overflow: hidden;
+      border: 1px solid rgba(0,0,0,0.12);
+      background: rgba(0,0,0,0.03);
+    }
+    .seg button {
+      appearance: none;
+      border: none;
+      padding: 8px 10px;
+      font-weight: 900;
+      font-size: 12px;
+      cursor: pointer;
+      background: transparent;
+      color: rgba(0,0,0,0.70);
+    }
+    .seg button.active {
+      background: rgba(139,92,246,0.14);
+      color: #4c1d95;
+    }
+
+    .btn-sm { padding: 8px 10px; font-size: 12px; border-radius: 12px; }
+    .btn-apply {
+      background: #8b5cf6;
+      color: white;
+      border: 1px solid rgba(139,92,246,0.55);
+      box-shadow: 0 10px 26px rgba(139,92,246,0.30);
+    }
+    .btn-apply:hover { transform: translateY(-1px); }
+    .btn-apply:active { transform: translateY(0px); opacity: 0.95; }
+    .dateRange { display: inline-flex; align-items: center; gap: 8px; }
+    .dateRange .arrow { color: rgba(0,0,0,0.50); font-weight: 900; font-size: 12px; }
+    .dateRange input[type="date"] {
+      appearance: none;
+      border: 1px solid rgba(0,0,0,0.12);
+      background: rgba(255,255,255,0.96);
+      border-radius: 12px;
+      padding: 7px 10px;
+      font-weight: 900;
+      font-size: 12px;
+      color: #111;
+      line-height: 1.2;
+    }
+
+    .view { display: none; }
+    .view.active { display: block; }
+
+    .placeholder {
+      border: 1px dashed rgba(0,0,0,0.18);
+      background: rgba(0,0,0,0.02);
+      border-radius: 14px;
+      padding: 14px;
+      color: #333;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="sidebarBrand">
+        <span class="logoDot"></span>
+        <span>FinalRoundApp</span>
+      </div>
+      <nav class="nav" id="nav">
+        <a href="#overview" data-route="overview" class="active">
+          <span class="left">
+            <span class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 10.5 12 3l9 7.5"></path><path d="M5 10v10h14V10"></path>
+              </svg>
+            </span>
+            <span class="label">Overview</span>
+          </span>
+          <span class="pill">Home</span>
+        </a>
+        <a href="#settings" data-route="settings">
+          <span class="left">
+            <span class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 21v-7"></path>
+                <path d="M4 10V3"></path>
+                <path d="M12 21v-9"></path>
+                <path d="M12 8V3"></path>
+                <path d="M20 21v-5"></path>
+                <path d="M20 12V3"></path>
+                <path d="M1 14h6"></path>
+                <path d="M9 8h6"></path>
+                <path d="M17 16h6"></path>
+              </svg>
+            </span>
+            <span class="label">Settings</span>
+          </span>
+        </a>
+        <a href="#usage" data-route="usage">
+          <span class="left">
+            <span class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 19V5"></path><path d="M10 19V9"></path><path d="M16 19V12"></path><path d="M22 19V7"></path>
+              </svg>
+            </span>
+            <span class="label">Usage</span>
+          </span>
+        </a>
+        <a href="#spending" data-route="spending">
+          <span class="left">
+            <span class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 1v22"></path><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7H14a3.5 3.5 0 0 1 0 7H6"></path>
+              </svg>
+            </span>
+            <span class="label">Spending</span>
+          </span>
+        </a>
+        <a href="#billing" data-route="billing">
+          <span class="left">
+            <span class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="5" width="18" height="14" rx="2"></rect>
+                <path d="M3 10h18"></path>
+              </svg>
+            </span>
+            <span class="label">Billing &amp; invoices</span>
+          </span>
+        </a>
+        <a href="#docs" data-route="docs">
+          <span class="left">
+            <span class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+                <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"></path>
+              </svg>
+            </span>
+            <span class="label">Docs</span>
+          </span>
+        </a>
+        <a href="#contact" data-route="contact">
+          <span class="left">
+            <span class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 8v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8"></path>
+                <path d="M21 8l-9 6-9-6"></path>
+                <path d="M3 8l9 6 9-6"></path>
+              </svg>
+            </span>
+            <span class="label">Contact us</span>
+          </span>
+        </a>
+      </nav>
+    </aside>
+
+    <main class="main">
+      <div class="mainInner">
+        <div class="topbar">
+          <div class="titleBlock">
+            <div class="pageTitle" id="pageTitle">Overview</div>
+            <div class="pageSub" id="pageSub">Plan snapshot and quick actions</div>
+          </div>
+          <div class="actions">
+            <button class="btn btn-secondary" id="refreshBtn">Refresh</button>
+            <button class="btn btn-ghost" id="signOutBtn">Sign out</button>
+          </div>
+        </div>
+
+        <div class="view active" id="view-overview">
+          <div class="card">
+            <h1>Plan snapshot</h1>
+            <div class="muted" id="periodText">Loading…</div>
+            <div class="error" id="errorBox"></div>
+
+            <div class="kpis">
+              <div class="kpi">
+                <div class="label">Current plan</div>
+                <div class="value" id="planValue">—</div>
+              </div>
+              <div class="kpi">
+                <div class="label">Transcription minutes remaining</div>
+                <div class="value" id="minutesValue">—</div>
+                <div class="bar"><div id="minutesBar"></div></div>
+              </div>
+              <div class="kpi">
+                <div class="label">AI tokens remaining</div>
+                <div class="value" id="tokensValue">—</div>
+                <div class="bar"><div id="tokensBar"></div></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h1>Current plan &amp; upgrades</h1>
+            <div class="muted">Your current plan is highlighted. Higher tiers are available to upgrade.</div>
+            <div class="plans" id="plansOverview"></div>
+          </div>
+
+          <div class="card">
+            <h1>Daily AI token usage (this billing month)</h1>
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:6px; flex-wrap:wrap;">
+              <div class="muted">X = day, Y = tokens</div>
+              <div style="display:flex; align-items:center; justify-content:flex-end; gap:10px; flex-wrap:wrap;">
+                <div class="seg" id="dailyRange">
+                  <button type="button" data-days="1">1D</button>
+                  <button type="button" data-days="7">7D</button>
+                  <button type="button" data-days="30" class="active">30D</button>
+                </div>
+                <div class="dateRange" id="dailyDateRange">
+                  <input type="date" id="dailyStart" />
+                  <span class="arrow">→</span>
+                  <input type="date" id="dailyEnd" />
+                  <button type="button" class="btn btn-sm btn-apply" id="dailyApply">Apply</button>
+                </div>
+              </div>
+            </div>
+            <div class="error" id="dailyChartError" style="display:none;"></div>
+            <div style="margin-top: 12px;">
+              <canvas id="dailyTokensChart" style="width:100%; height:260px; display:block;"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <div class="view" id="view-usage">
+          <div class="card">
+            <h1>Plan & Usage</h1>
+            <div class="muted">Detailed usage and upgrade tiers.</div>
+            <div class="error" id="errorBoxUsage" style="display:none;"></div>
+
+            <div class="kpis">
+              <div class="kpi">
+                <div class="label">Current plan</div>
+                <div class="value" id="planValueUsage">—</div>
+              </div>
+              <div class="kpi">
+                <div class="label">Minutes remaining</div>
+                <div class="value" id="minutesValueUsage">—</div>
+                <div class="bar"><div id="minutesBarUsage"></div></div>
+              </div>
+              <div class="kpi">
+                <div class="label">Tokens remaining</div>
+                <div class="value" id="tokensValueUsage">—</div>
+                <div class="bar"><div id="tokensBarUsage"></div></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h1>Upgrade plans</h1>
+            <div class="muted">Upgrade flow isn’t wired yet, but these are the available tiers.</div>
+            <div class="plans" id="plans"></div>
+          </div>
+        </div>
+
+        <div class="view" id="view-settings">
+          <div class="card">
+            <h1>Settings</h1>
+            <div class="placeholder">Coming soon: web settings (profile, security, preferences).</div>
+          </div>
+        </div>
+
+        <div class="view" id="view-spending">
+          <div class="card">
+            <h1>Spending</h1>
+            <div class="placeholder">Coming soon: cost breakdown by month, model, and feature.</div>
+          </div>
+        </div>
+
+        <div class="view" id="view-billing">
+          <div class="card">
+            <h1>Billing &amp; invoices</h1>
+            <div class="placeholder">Coming soon: payment method, invoices, and receipts.</div>
+          </div>
+        </div>
+
+        <div class="view" id="view-docs">
+          <div class="card">
+            <h1>Docs</h1>
+            <div class="placeholder">
+              <div style="font-weight: 800; margin-bottom: 6px;">Helpful links</div>
+              <div class="muted">Add your docs URLs here.</div>
+              <ul style="margin-top: 10px; padding-left: 18px; line-height: 1.8;">
+                <li><a href="/health" style="color:#4c1d95; text-decoration: underline;">API health check</a></li>
+                <li><a href="/api/billing/me" style="color:#4c1d95; text-decoration: underline;">Billing API (requires auth)</a></li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="view" id="view-contact">
+          <div class="card">
+            <h1>Contact us</h1>
+            <div class="placeholder">
+              Email: <a href="mailto:hello@finalroundapp.com" style="color:#4c1d95; text-decoration: underline;">hello@finalroundapp.com</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const token = localStorage.getItem('token');
+    if (!token) window.location.href = '/auth/signin';
+
+    const $ = (id) => document.getElementById(id);
+    const refreshBtn = $('refreshBtn');
+    const nav = $('nav');
+    const pageTitle = $('pageTitle');
+    const pageSub = $('pageSub');
+
+    const planOffers = [
+      { key: 'free', name: 'Free', minutes: 600, tokens: 50000, requests: 200, summary: false },
+      { key: 'pro', name: 'Pro', minutes: 1500, tokens: 500000, requests: 5000, summary: true },
+      { key: 'pro_plus', name: 'Pro+', minutes: 6000, tokens: 2000000, requests: 20000, summary: true },
+    ];
+    let dailyPoints = [];
+    let currentRoute = 'overview';
+    let chartRangeDays = 30;
+    let chartStart = null; // YYYY-MM-DD
+    let chartEnd = null;   // YYYY-MM-DD
+    // Date picker limits. We only cap max to today to avoid selecting future dates.
+    let minSelectableDay = null; // YYYY-MM-DD (optional; keep null to allow previous months)
+    let maxSelectableDay = null; // YYYY-MM-DD (today UTC)
+
+    function fmt(n) { return String(n ?? 0); }
+    function clampPct(v) { return Math.max(0, Math.min(100, v)); }
+    function ymdUTC(d) {
+      const y = d.getUTCFullYear();
+      const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(d.getUTCDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
+    function addDaysUTC(ymd, deltaDays) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || ''));
+      if (!m) return null;
+      const y = parseInt(m[1], 10);
+      const mo = parseInt(m[2], 10);
+      const d = parseInt(m[3], 10);
+      const dt = new Date(Date.UTC(y, mo - 1, d, 0, 0, 0, 0));
+      dt.setUTCDate(dt.getUTCDate() + (deltaDays || 0));
+      return ymdUTC(dt);
+    }
+    function clampYmd(v, minV, maxV) {
+      if (!v) return v;
+      if (minV && v < minV) return minV;
+      if (maxV && v > maxV) return maxV;
+      return v;
+    }
+    function setDateInputs(startYmd, endYmd) {
+      const s = $('dailyStart');
+      const e = $('dailyEnd');
+      if (s && minSelectableDay) s.min = minSelectableDay;
+      if (e && minSelectableDay) e.min = minSelectableDay;
+      if (s && maxSelectableDay) s.max = maxSelectableDay;
+      if (e && maxSelectableDay) e.max = maxSelectableDay;
+      if (s) s.value = startYmd || '';
+      if (e) e.value = endYmd || '';
+    }
+
+    function renderPlansInto(containerId, currentPlanKey) {
+      const plansEl = $(containerId);
+      if (!plansEl) return;
+      const curIdx = planOffers.findIndex(p => p.key === currentPlanKey);
+      plansEl.innerHTML = '';
+      planOffers.forEach((p, idx) => {
+        if (idx < curIdx) return; // only show current + upgradable
+        const isCurrent = p.key === currentPlanKey;
+        const div = document.createElement('div');
+        div.className = 'plan' + (isCurrent ? ' current' : '');
+        div.innerHTML = `
+          <div class="name">${p.name}${isCurrent ? '<span class="badge">Current</span>' : ''}</div>
+          <ul>
+            <li>${fmt(p.minutes)} transcription minutes / month</li>
+            <li>${fmt(p.tokens)} AI tokens / month</li>
+            <li>${fmt(p.requests)} AI requests / month</li>
+            <li>Summary: ${p.summary ? 'enabled' : 'not included'}</li>
+          </ul>
+          ${isCurrent ? '' : '<button class="btn btn-primary cta" disabled>Upgrade (coming soon)</button>'}
+        `;
+        plansEl.appendChild(div);
+      });
+    }
+
+    function setKpi(prefix, data) {
+      const t = data.transcription || {};
+      const a = data.ai || {};
+      const plan = String(data.plan || 'free');
+      const planUpper = plan.toUpperCase();
+
+      const planEl = $(prefix + 'planValue');
+      const minutesEl = $(prefix + 'minutesValue');
+      const minutesBarEl = $(prefix + 'minutesBar');
+      const tokensEl = $(prefix + 'tokensValue');
+      const tokensBarEl = $(prefix + 'tokensBar');
+
+      if (planEl) planEl.textContent = planUpper;
+      if (minutesEl) minutesEl.textContent = fmt(t.remainingMinutes) + ' min';
+      if (minutesBarEl) {
+        const minPct = t.limitMinutes ? (100 * (t.usedMinutes / t.limitMinutes)) : 0;
+        minutesBarEl.style.width = clampPct(minPct) + '%';
+      }
+      if (tokensEl) tokensEl.textContent = fmt(a.remainingTokens) + ' tokens';
+      if (tokensBarEl) {
+        const tokPct = a.limitTokens ? (100 * (a.usedTokens / a.limitTokens)) : 0;
+        tokensBarEl.style.width = clampPct(tokPct) + '%';
+      }
+    }
+
+    function showError(msg) {
+      const e1 = $('errorBox');
+      const e2 = $('errorBoxUsage');
+      if (e1) { e1.textContent = msg; e1.style.display = 'block'; }
+      if (e2) { e2.textContent = msg; e2.style.display = 'block'; }
+    }
+
+    function clearErrors() {
+      const e1 = $('errorBox');
+      const e2 = $('errorBoxUsage');
+      if (e1) e1.style.display = 'none';
+      if (e2) e2.style.display = 'none';
+    }
+
+    function setPeriodText(data) {
+      const start = data.billingPeriod?.start || '—';
+      const end = data.billingPeriod?.end || '—';
+      const el = $('periodText');
+      if (el) el.textContent = 'Billing period: ' + start + ' → ' + end;
+    }
+
+    function drawDailyTokensChart(points) {
+      const canvas = $('dailyTokensChart');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      // Resize to match CSS size (high-DPI safe)
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+      canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      const w = rect.width;
+      const h = rect.height;
+      ctx.clearRect(0, 0, w, h);
+
+      const padL = 46, padR = 16, padT = 12, padB = 28;
+      const plotW = w - padL - padR;
+      const plotH = h - padT - padB;
+      if (plotW <= 10 || plotH <= 10) return;
+
+      const maxY = Math.max(10, ...points.map(p => p.tokens || 0));
+      const minY = 0;
+      const n = points.length;
+
+      // Background
+      ctx.fillStyle = 'rgba(0,0,0,0.02)';
+      ctx.fillRect(padL, padT, plotW, plotH);
+
+      // Grid + Y labels
+      ctx.strokeStyle = 'rgba(0,0,0,0.10)';
+      ctx.lineWidth = 1;
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto';
+
+      const ticks = 4;
+      for (let i = 0; i <= ticks; i++) {
+        const y = padT + (plotH * i / ticks);
+        ctx.beginPath();
+        ctx.moveTo(padL, y);
+        ctx.lineTo(padL + plotW, y);
+        ctx.stroke();
+        const val = Math.round(maxY * (1 - i / ticks));
+        ctx.fillText(val >= 1000 ? (Math.round(val / 1000) + 'k') : String(val), 6, y + 4);
+      }
+
+      // X labels (show every ~5th day)
+      const step = Math.max(1, Math.round(n / 6));
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      for (let i = 0; i < n; i += step) {
+        const x = padL + (plotW * (n === 1 ? 0 : i / (n - 1)));
+        const day = points[i].date ? points[i].date.slice(-2) : '';
+        ctx.fillText(day, x - 6, padT + plotH + 18);
+      }
+
+      // Line
+      const toX = (i) => padL + (plotW * (n === 1 ? 0 : i / (n - 1)));
+      const toY = (v) => padT + plotH - (plotH * ((v - minY) / (maxY - minY)));
+
+      ctx.strokeStyle = '#8b5cf6';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      for (let i = 0; i < n; i++) {
+        const x = toX(i);
+        const y = toY(points[i].tokens || 0);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // Points
+      ctx.fillStyle = '#8b5cf6';
+      for (let i = 0; i < n; i++) {
+        const x = toX(i);
+        const y = toY(points[i].tokens || 0);
+        ctx.beginPath();
+        ctx.arc(x, y, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    async function loadDailyTokens() {
+      const errEl = $('dailyChartError');
+      if (errEl) errEl.style.display = 'none';
+      try {
+        const hasCustom = !!(chartStart && chartEnd);
+        const url = hasCustom
+          ? ('/api/billing/ai-daily-tokens?start=' + encodeURIComponent(chartStart) + '&end=' + encodeURIComponent(chartEnd))
+          : ('/api/billing/ai-daily-tokens?days=' + encodeURIComponent(String(chartRangeDays)));
+        const res = await fetch(url, {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || data.message || ('HTTP ' + res.status));
+        const days = Array.isArray(data.days) ? data.days : [];
+        dailyPoints = days;
+        drawDailyTokensChart(dailyPoints);
+      } catch (e) {
+        if (errEl) {
+          errEl.textContent = String(e.message || e);
+          errEl.style.display = 'block';
+        }
+      }
+    }
+
+    function routeMeta(route) {
+      switch (route) {
+        case 'overview': return { title: 'Overview', sub: 'Plan snapshot and quick actions' };
+        case 'usage': return { title: 'Usage', sub: 'Plan, limits, and usage details' };
+        case 'settings': return { title: 'Settings', sub: 'Preferences and account settings' };
+        case 'spending': return { title: 'Spending', sub: 'Costs and usage spend' };
+        case 'billing': return { title: 'Billing & invoices', sub: 'Payment method and invoices' };
+        case 'docs': return { title: 'Docs', sub: 'Product and API documentation' };
+        case 'contact': return { title: 'Contact us', sub: 'Get help from support' };
+        default: return { title: 'Overview', sub: 'Plan snapshot and quick actions' };
+      }
+    }
+
+    function setRoute(route) {
+      const r = route || 'overview';
+      currentRoute = r;
+      document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+      const view = document.getElementById('view-' + r);
+      if (view) view.classList.add('active');
+
+      document.querySelectorAll('.nav a').forEach(a => a.classList.remove('active'));
+      const link = document.querySelector(`.nav a[data-route="${r}"]`);
+      if (link) link.classList.add('active');
+
+      const meta = routeMeta(r);
+      pageTitle.textContent = meta.title;
+      pageSub.textContent = meta.sub;
+
+      // Chart needs a visible canvas size to render correctly.
+      if (r === 'overview') {
+        if (Array.isArray(dailyPoints) && dailyPoints.length > 0) {
+          setTimeout(() => drawDailyTokensChart(dailyPoints), 0);
+        } else {
+          loadDailyTokens();
+        }
+      }
+    }
+
+    async function load() {
+      clearErrors();
+      refreshBtn.disabled = true;
+      refreshBtn.textContent = 'Refreshing…';
+
+      try {
+        const res = await fetch('/api/billing/me', {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const msg = data.error || data.message || ('HTTP ' + res.status);
+          throw new Error(msg);
+        }
+
+        setPeriodText(data);
+        setKpi('', data); // overview ids
+        // usage ids have a suffix; map via a small prefix trick
+        // (we use explicit ids in the DOM, not dynamic creation)
+        $('planValueUsage').textContent = (data.plan || 'free').toUpperCase();
+        $('minutesValueUsage').textContent = fmt((data.transcription || {}).remainingMinutes) + ' min';
+        $('tokensValueUsage').textContent = fmt((data.ai || {}).remainingTokens) + ' tokens';
+        const t = data.transcription || {};
+        const a = data.ai || {};
+        $('minutesBarUsage').style.width = clampPct(t.limitMinutes ? (100 * (t.usedMinutes / t.limitMinutes)) : 0) + '%';
+        $('tokensBarUsage').style.width = clampPct(a.limitTokens ? (100 * (a.usedTokens / a.limitTokens)) : 0) + '%';
+
+        const planKey = String(data.plan || 'free');
+        renderPlansInto('plans', planKey);
+        renderPlansInto('plansOverview', planKey);
+
+        // Initialize date pickers (allow selecting previous months; only cap max to today UTC).
+        try {
+          const bpStartIso = data.billingPeriod?.start;
+          const bpEndIso = data.billingPeriod?.end; // end is exclusive start-of-next-period
+          if (bpStartIso && bpEndIso) {
+            const today = ymdUTC(new Date());
+            maxSelectableDay = today;
+            // Keep minSelectableDay = null to allow selecting previous months.
+
+            // Default date range reflects the active (30D) selection (ending today).
+            const endYmd = maxSelectableDay;
+            const startYmd = clampYmd(addDaysUTC(endYmd, -(chartRangeDays - 1)), minSelectableDay, maxSelectableDay);
+            setDateInputs(startYmd, endYmd);
+          }
+        } catch (_) {
+          // If parsing fails, inputs remain unconstrained.
+        }
+
+        loadDailyTokens();
+      } catch (e) {
+        showError(String(e.message || e));
+      } finally {
+        refreshBtn.disabled = false;
+        refreshBtn.textContent = 'Refresh';
+      }
+    }
+
+    $('signOutBtn').addEventListener('click', () => {
+      localStorage.removeItem('token');
+      window.location.href = '/';
+    });
+    refreshBtn.addEventListener('click', load);
+
+    // Sidebar navigation + route switching
+    function routeFromHash() {
+      const h = (window.location.hash || '').replace('#', '').trim();
+      return h || 'overview';
+    }
+    window.addEventListener('hashchange', () => setRoute(routeFromHash()));
+    window.addEventListener('resize', () => {
+      if (currentRoute === 'overview' && Array.isArray(dailyPoints) && dailyPoints.length > 0) {
+        drawDailyTokensChart(dailyPoints);
+      }
+    });
+
+    // Range selector for chart
+    const rangeEl = $('dailyRange');
+    if (rangeEl) {
+      rangeEl.addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-days]');
+        if (!btn) return;
+        const days = parseInt(btn.getAttribute('data-days'), 10);
+        if (!Number.isFinite(days) || days <= 0) return;
+        chartRangeDays = days;
+        chartStart = null;
+        chartEnd = null;
+        rangeEl.querySelectorAll('button[data-days]').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        // Sync date inputs to match the quick range (ending today).
+        if (maxSelectableDay) {
+          const endYmd = maxSelectableDay;
+          const startYmd = clampYmd(addDaysUTC(endYmd, -(chartRangeDays - 1)), minSelectableDay, maxSelectableDay);
+          setDateInputs(startYmd, endYmd);
+        }
+        loadDailyTokens();
+      });
+    }
+
+    // Custom date range apply
+    const applyBtn = $('dailyApply');
+    if (applyBtn) {
+      applyBtn.addEventListener('click', () => {
+        const errEl = $('dailyChartError');
+        if (errEl) errEl.style.display = 'none';
+        const s = $('dailyStart')?.value;
+        const e = $('dailyEnd')?.value;
+        if (!s || !e) return;
+        const startYmd = clampYmd(s, minSelectableDay, maxSelectableDay);
+        const endYmd = clampYmd(e, minSelectableDay, maxSelectableDay);
+        if (startYmd > endYmd) {
+          if (errEl) {
+            errEl.textContent = 'Start date must be on or before end date.';
+            errEl.style.display = 'block';
+          }
+          return;
+        }
+        chartStart = startYmd;
+        chartEnd = endYmd;
+        setDateInputs(chartStart, chartEnd);
+        // Clear quick-range active state to avoid confusion.
+        const rangeEl2 = $('dailyRange');
+        if (rangeEl2) rangeEl2.querySelectorAll('button[data-days]').forEach(b => b.classList.remove('active'));
+        loadDailyTokens();
+      });
+    }
+    nav.addEventListener('click', (e) => {
+      const a = e.target.closest('a[data-route]');
+      const quick = e.target.closest('a[data-route-link]');
+      if (a) {
+        // Allow hash navigation; route handler will switch view.
+        return;
+      }
+      if (quick) {
+        const r = quick.getAttribute('data-route-link');
+        if (r) window.location.hash = '#' + r;
+      }
+    });
+
+    setRoute(routeFromHash());
+    load();
+  </script>
+</body>
+</html>
+

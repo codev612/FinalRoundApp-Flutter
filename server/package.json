@@ -1,7 +1,7 @@
 {
-  "name": "hearnow-backend",
+  "name": "finalroundapp-server",
   "version": "1.0.0",
-  "description": "Backend server for HearNow speech-to-text app using Deepgram Nova 3",
+  "description": "Backend server for FinalRoundApp AI meeting assistant app using Deepgram Nova 3 and OpenAI",
   "main": "dist/server.js",
   "type": "module",
   "scripts": {
@@ -13,8 +13,26 @@
   },
   "keywords": [
     "deepgram",
+    "openai",
+    "ai",
+    "meeting",
+    "assistant",
+    "meeting-assistant",
+    "real-time",
+    "meeting-assistant-app",
+    "undetectable",
+    "screen capture",
     "speech-to-text",
-    "websocket"
+    "websocket",
+    "cross-platform",
+    "windows",
+    "linux",
+    "macos",
+    "ios",
+    "android",
+    "web",
+    "browser",
+    "chrome"
   ],
   "author": "",
   "license": "ISC",
