@@ -674,6 +674,11 @@ app.get('/api/billing/ai-daily-tokens-by-model', authenticate, async (req, res) 
         return res.status(500).json({ error: error.message || 'Failed to fetch daily AI token usage by model' });
     }
 });
+app.get('/api/billing/invoices', authenticate, async (_req, res) => {
+    // Placeholder until a real billing provider is wired.
+    // Shape: { invoices: [{ id, date, description, status, amountCents, currency, invoiceUrl? }] }
+    return res.json({ invoices: [] });
+});
 app.post('/api/billing/transcription-usage', authenticate, async (req, res) => {
     try {
         const userId = req.user.userId;

@@ -764,6 +764,12 @@ app.get('/api/billing/ai-daily-tokens-by-model', authenticate, async (req: AuthR
   }
 });
 
+app.get('/api/billing/invoices', authenticate, async (_req: AuthRequest, res: Response) => {
+  // Placeholder until a real billing provider is wired.
+  // Shape: { invoices: [{ id, date, description, status, amountCents, currency, invoiceUrl? }] }
+  return res.json({ invoices: [] });
+});
+
 app.post('/api/billing/transcription-usage', authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.userId;

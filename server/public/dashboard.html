@@ -335,7 +335,8 @@
           <span class="left">
             <span class="icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M3 10.5 12 3l9 7.5"></path><path d="M5 10v10h14V10"></path>
+                <path d="M3 10.5 12 3l9 7.5"></path>
+                <path d="M5 10v10h14V10Z"></path>
               </svg>
             </span>
             <span class="label">Overview</span>
@@ -370,16 +371,6 @@
             <span class="label">Usage</span>
           </span>
         </a>
-        <a href="#spending" data-route="spending">
-          <span class="left">
-            <span class="icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 1v22"></path><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7H14a3.5 3.5 0 0 1 0 7H6"></path>
-              </svg>
-            </span>
-            <span class="label">Spending</span>
-          </span>
-        </a>
         <a href="#billing" data-route="billing">
           <span class="left">
             <span class="icon" aria-hidden="true">
@@ -391,23 +382,11 @@
             <span class="label">Billing &amp; invoices</span>
           </span>
         </a>
-        <a href="#docs" data-route="docs">
-          <span class="left">
-            <span class="icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
-                <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"></path>
-              </svg>
-            </span>
-            <span class="label">Docs</span>
-          </span>
-        </a>
         <a href="#contact" data-route="contact">
           <span class="left">
             <span class="icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 8v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8"></path>
-                <path d="M21 8l-9 6-9-6"></path>
+                <rect x="3" y="6" width="18" height="14" rx="2"></rect>
                 <path d="M3 8l9 6 9-6"></path>
               </svg>
             </span>
@@ -491,11 +470,7 @@
             <div class="muted">Detailed usage and upgrade tiers.</div>
             <div class="error" id="errorBoxUsage" style="display:none;"></div>
 
-            <div class="kpis">
-              <div class="kpi">
-                <div class="label">Current plan</div>
-                <div class="value" id="planValueUsage">—</div>
-              </div>
+            <div class="kpis" style="grid-template-columns: repeat(2, 1fr);">
               <div class="kpi">
                 <div class="label">Minutes remaining</div>
                 <div class="value" id="minutesValueUsage">—</div>
@@ -507,12 +482,6 @@
                 <div class="bar"><div id="tokensBarUsage"></div></div>
               </div>
             </div>
-          </div>
-
-          <div class="card">
-            <h1>Upgrade plans</h1>
-            <div class="muted">Upgrade flow isn’t wired yet, but these are the available tiers.</div>
-            <div class="plans" id="plans"></div>
           </div>
 
           <div class="card">
@@ -563,14 +532,36 @@
         <div class="view" id="view-spending">
           <div class="card">
             <h1>Spending</h1>
-            <div class="placeholder">Coming soon: cost breakdown by month, model, and feature.</div>
+            <div class="muted">Plan and token usage snapshot.</div>
+            <div class="error" id="errorBoxSpending" style="display:none;"></div>
+
+            <div class="kpis" style="margin-top: 12px; grid-template-columns: repeat(2, 1fr);">
+              <div class="kpi">
+                <div class="label">AI tokens used</div>
+                <div class="value" id="tokensUsedSpending">—</div>
+                <div class="bar"><div id="tokensBarSpending"></div></div>
+              </div>
+              <div class="kpi">
+                <div class="label">AI tokens remaining</div>
+                <div class="value" id="tokensRemainingSpending">—</div>
+              </div>
+            </div>
           </div>
         </div>
 
         <div class="view" id="view-billing">
           <div class="card">
-            <h1>Billing &amp; invoices</h1>
-            <div class="placeholder">Coming soon: payment method, invoices, and receipts.</div>
+            <h1>Plans</h1>
+            <div class="muted">Your current plan is highlighted. Higher tiers are available to upgrade.</div>
+            <div class="plans" id="plansBilling"></div>
+          </div>
+          <div class="card">
+            <h1>Invoices</h1>
+            <div class="muted">Date, description, status, and amount.</div>
+            <div class="error" id="invoicesError" style="display:none;"></div>
+            <div class="tableWrap" style="margin-top: 12px;">
+              <table class="table" id="invoicesTable"></table>
+            </div>
           </div>
         </div>
 
@@ -717,15 +708,19 @@
     function showError(msg) {
       const e1 = $('errorBox');
       const e2 = $('errorBoxUsage');
+      const e3 = $('errorBoxSpending');
       if (e1) { e1.textContent = msg; e1.style.display = 'block'; }
       if (e2) { e2.textContent = msg; e2.style.display = 'block'; }
+      if (e3) { e3.textContent = msg; e3.style.display = 'block'; }
     }
 
     function clearErrors() {
       const e1 = $('errorBox');
       const e2 = $('errorBoxUsage');
+      const e3 = $('errorBoxSpending');
       if (e1) e1.style.display = 'none';
       if (e2) e2.style.display = 'none';
+      if (e3) e3.style.display = 'none';
     }
 
     function setPeriodText(data) {
@@ -906,6 +901,80 @@
           totalRows.push(`<tr><th>Total</th><th>${String(m)}</th><th class="num">${String(v)}</th></tr>`);
         }
         tfoot.innerHTML = totalRows.join('');
+      } catch (e) {
+        table.innerHTML = '';
+        if (errEl) {
+          errEl.textContent = String(e.message || e);
+          errEl.style.display = 'block';
+        }
+      }
+    }
+
+    function fmtMoneyCents(cents, currency) {
+      const cur = (currency || 'USD').toUpperCase();
+      const v = Number(cents || 0) || 0;
+      const amount = (v / 100);
+      try {
+        return new Intl.NumberFormat(undefined, { style: 'currency', currency: cur }).format(amount);
+      } catch (_) {
+        return cur + ' ' + amount.toFixed(2);
+      }
+    }
+
+    async function loadInvoicesTable() {
+      const table = $('invoicesTable');
+      const errEl = $('invoicesError');
+      if (errEl) errEl.style.display = 'none';
+      if (!table) return;
+      table.innerHTML = '<tr><td>Loading…</td></tr>';
+      try {
+        const res = await fetch('/api/billing/invoices', {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || data.message || ('HTTP ' + res.status));
+
+        const rows = Array.isArray(data.invoices) ? data.invoices : [];
+        table.innerHTML = `
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Description</th>
+              <th>Status</th>
+              <th class="num">Amount</th>
+              <th>Invoice</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        `;
+        const tbody = table.querySelector('tbody');
+        if (!rows.length) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td colspan="5" style="color:#555;">No invoices yet.</td>`;
+          tbody.appendChild(tr);
+          return;
+        }
+        for (const inv of rows) {
+          const date = String(inv.date || '');
+          const desc = String(inv.description || '');
+          const status = String(inv.status || '');
+          const amountCents = Number(inv.amountCents || 0) || 0;
+          const currency = String(inv.currency || 'USD');
+          const url = inv.invoiceUrl ? String(inv.invoiceUrl) : '';
+          const view = url
+            ? `<a href="${url}" target="_blank" rel="noopener" style="color:#4c1d95; text-decoration: underline;">View</a>`
+            : `<span style="color:#777;">—</span>`;
+
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${date}</td>
+            <td>${desc}</td>
+            <td>${status}</td>
+            <td class="num">${fmtMoneyCents(amountCents, currency)}</td>
+            <td>${view}</td>
+          `;
+          tbody.appendChild(tr);
+        }
       } catch (e) {
         table.innerHTML = '';
         if (errEl) {
@@ -1127,6 +1196,10 @@
       if (r === 'settings') {
         loadAuthSessions();
       }
+
+      if (r === 'billing') {
+        loadInvoicesTable();
+      }
     }
 
     async function load() {
@@ -1149,17 +1222,29 @@
         setKpi('', data); // overview ids
         // usage ids have a suffix; map via a small prefix trick
         // (we use explicit ids in the DOM, not dynamic creation)
-        $('planValueUsage').textContent = (data.plan || 'free').toUpperCase();
-        $('minutesValueUsage').textContent = fmt((data.transcription || {}).remainingMinutes) + ' min';
-        $('tokensValueUsage').textContent = fmt((data.ai || {}).remainingTokens) + ' tokens';
+        const minutesUsageEl = $('minutesValueUsage');
+        const tokensUsageEl = $('tokensValueUsage');
+        if (minutesUsageEl) minutesUsageEl.textContent = fmt((data.transcription || {}).remainingMinutes) + ' min';
+        if (tokensUsageEl) tokensUsageEl.textContent = fmt((data.ai || {}).remainingTokens) + ' tokens';
         const t = data.transcription || {};
         const a = data.ai || {};
         $('minutesBarUsage').style.width = clampPct(t.limitMinutes ? (100 * (t.usedMinutes / t.limitMinutes)) : 0) + '%';
         $('tokensBarUsage').style.width = clampPct(a.limitTokens ? (100 * (a.usedTokens / a.limitTokens)) : 0) + '%';
 
         const planKey = String(data.plan || 'free');
-        renderPlansInto('plans', planKey);
         renderPlansInto('plansOverview', planKey);
+        renderPlansInto('plansBilling', planKey);
+
+        // Spending view snapshot
+        const usedSpendEl = $('tokensUsedSpending');
+        const remSpendEl = $('tokensRemainingSpending');
+        const barSpendEl = $('tokensBarSpending');
+        if (usedSpendEl) usedSpendEl.textContent = fmt(a.usedTokens) + ' / ' + fmt(a.limitTokens) + ' tokens';
+        if (remSpendEl) remSpendEl.textContent = fmt(a.remainingTokens) + ' tokens';
+        if (barSpendEl) {
+          const tokPct = a.limitTokens ? (100 * (a.usedTokens / a.limitTokens)) : 0;
+          barSpendEl.style.width = clampPct(tokPct) + '%';
+        }
 
         // Initialize date pickers (allow selecting previous months; only cap max to today UTC).
         try {
