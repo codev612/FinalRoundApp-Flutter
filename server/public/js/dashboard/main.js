@@ -57,6 +57,10 @@ function setRoute(route) {
 
   if (r === 'billing') {
     loadInvoicesTable();
+    if (typeof window.renderPayPalUpgradeUi === 'function') {
+      // Render PayPal buttons once billing view is visible.
+      window.renderPayPalUpgradeUi(window.__currentPlanKey || null);
+    }
   }
 }
 
@@ -113,8 +117,12 @@ async function load() {
     if (tokensBarUsage) tokensBarUsage.style.width = clampPct(a.limitTokens ? (100 * (a.usedTokens / a.limitTokens)) : 0) + '%';
 
     const planKey = String(data.plan || 'free');
+    window.__currentPlanKey = planKey;
     renderPlansInto('plansOverview', planKey);
     renderPlansInto('plansBilling', planKey);
+    if (typeof window.renderPayPalUpgradeUi === 'function') {
+      window.renderPayPalUpgradeUi(planKey);
+    }
 
     // Spending view snapshot
     const usedSpendEl = $('tokensUsedSpending');

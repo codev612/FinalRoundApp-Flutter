@@ -4,6 +4,15 @@ export interface User {
     id?: string;
     email: string;
     name: string;
+    paypal?: {
+        subscriptionId: string;
+        planId: string;
+        status: string;
+        subscriberEmail?: string | null;
+        nextBillingTime?: string | null;
+        createdAt?: number;
+        updatedAt?: number;
+    };
     plan?: 'free' | 'pro' | 'pro_plus';
     plan_updated_at?: number;
     password_hash: string;
@@ -152,6 +161,15 @@ export declare const getUserByResetCode: (code: string) => Promise<User | undefi
 export declare const updatePassword: (userId: string, passwordHash: string) => Promise<void>;
 export declare const updateUserName: (userId: string, name: string) => Promise<void>;
 export declare const updateUserEmail: (userId: string, email: string) => Promise<void>;
+export declare const setUserPayPalSubscription: (userId: string, data: {
+    subscriptionId: string;
+    planId: string;
+    status: string;
+    plan: "free" | "pro" | "pro_plus";
+    subscriberEmail?: string | null;
+    nextBillingTime?: string | null;
+}) => Promise<void>;
+export declare const updatePayPalSubscriptionStatusBySubscriptionId: (subscriptionId: string, status: string, plan?: "free" | "pro" | "pro_plus", nextBillingTime?: string | null) => Promise<void>;
 export declare const setPendingEmailChange: (userId: string, newEmail: string, currentEmailCode: string) => Promise<void>;
 export declare const verifyCurrentEmailForChange: (userId: string, currentEmailCode: string) => Promise<boolean>;
 export declare const setNewEmailCode: (userId: string, newEmailCode: string) => Promise<void>;

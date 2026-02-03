@@ -1507,7 +1507,24 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
   void _askQuestionFromTemplate(String question) {
     if (_speechProvider != null && !_speechProvider!.isAiLoading) {
       _askAiWithPrompt(question);
+      // Focus conversation on the current question (last part of history)
+      _scrollTranscriptToBottom();
     }
+  }
+
+  /// Scrolls the transcript list to the bottom so the last message (current question) is in view.
+  void _scrollTranscriptToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (!_transcriptScrollController.hasClients) return;
+      final position = _transcriptScrollController.position;
+      final target = position.maxScrollExtent;
+      _transcriptScrollController.animateTo(
+        target,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+      );
+    });
   }
 
   Future<void> _showAskAiDialog() async {

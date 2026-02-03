@@ -51,6 +51,7 @@ export const connectDB = async () => {
             await usersCollection.createIndex({ reset_code: 1 });
             await usersCollection.createIndex({ 'reset_token_expires': 1 });
             await usersCollection.createIndex({ 'reset_code_expires': 1 });
+            await usersCollection.createIndex({ 'paypal.subscriptionId': 1 });
         }
         if (!sessionsCollection) {
             sessionsCollection = db.collection('meeting_sessions');
@@ -427,6 +428,44 @@ export const updateUserEmail = async (userId, email) => {
             updated_at: Date.now(),
         },
     });
+};
+export const setUserPayPalSubscription = async (userId, data) => {
+    const collection = getUsersCollection();
+    const now = Date.now();
+    const existing = await collection.findOne({ _id: new ObjectId(userId) });
+    const createdAt = existing?.paypal?.createdAt ?? now;
+    await collection.updateOne({ _id: new ObjectId(userId) }, {
+        $set: {
+            plan: data.plan,
+            plan_updated_at: now,
+            paypal: {
+                subscriptionId: data.subscriptionId,
+                planId: data.planId,
+                status: data.status,
+                subscriberEmail: data.subscriberEmail ?? null,
+                nextBillingTime: data.nextBillingTime ?? null,
+                createdAt,
+                updatedAt: now,
+            },
+            updated_at: now,
+        },
+    });
+};
+export const updatePayPalSubscriptionStatusBySubscriptionId = async (subscriptionId, status, plan, nextBillingTime) => {
+    const collection = getUsersCollection();
+    const now = Date.now();
+    const setObj = {
+        'paypal.status': status,
+        'paypal.updatedAt': now,
+        updated_at: now,
+    };
+    if (typeof nextBillingTime !== 'undefined')
+        setObj['paypal.nextBillingTime'] = nextBillingTime;
+    if (plan) {
+        setObj.plan = plan;
+        setObj.plan_updated_at = now;
+    }
+    await collection.updateOne({ 'paypal.subscriptionId': subscriptionId }, { $set: setObj });
 };
 export const setPendingEmailChange = async (userId, newEmail, currentEmailCode) => {
     const collection = getUsersCollection();

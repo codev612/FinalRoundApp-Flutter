@@ -7,6 +7,7 @@ import cors from 'cors';
 import { createServer, IncomingMessage } from 'http';
 import { Socket } from 'net';
 import authRoutes from './routes/auth.js';
+import paypalRoutes from './routes/paypal.js';
 import { authenticate, verifyToken, AuthRequest, JWTPayload } from './auth.js';
 import { AuthenticatedWebSocket } from './types.js';
 import { registerWebSocketForSession } from './sessionBus.js';
@@ -106,6 +107,7 @@ app.get('/health', (_req: Request, res: Response) => {
 
 // Authentication routes
 app.use('/api/auth', authRoutes);
+app.use('/api/billing/paypal', paypalRoutes);
 
 // Meeting Session API endpoints (protected)
 app.post('/api/sessions', authenticate, async (req: AuthRequest, res: Response) => {

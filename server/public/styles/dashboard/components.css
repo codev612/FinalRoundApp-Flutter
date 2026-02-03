@@ -108,6 +108,10 @@
   font-weight: 800;
 }
 
+.paypalWrap {
+  margin-top: 10px;
+}
+
 .card {
   background: rgba(255,255,255,0.95);
   border-radius: 16px;

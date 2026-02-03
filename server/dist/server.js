@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import cors from 'cors';
 import { createServer } from 'http';
 import authRoutes from './routes/auth.js';
+import paypalRoutes from './routes/paypal.js';
 import { authenticate, verifyToken } from './auth.js';
 import { registerWebSocketForSession } from './sessionBus.js';
 import { connectDB, closeDB, createMeetingSession, getMeetingSession, updateMeetingSession, listMeetingSessions, deleteMeetingSession, getModeConfigs, saveModeConfig, getCustomModes, saveCustomModes, deleteCustomMode, getQuestionTemplates, saveQuestionTemplates, deleteQuestionTemplate, saveApiUsage, getUserApiUsage, getUserApiUsageStats, getUserDailyAiTokenUsage, getUserDailyAiTokenUsageByModel, getUserByIdFull, saveTranscriptionUsage, getTranscriptionUsageMsForPeriod, validateAuthSessionAndMaybeTouch, } from './database.js';
@@ -69,6 +70,7 @@ app.get('/health', (_req, res) => {
 });
 // Authentication routes
 app.use('/api/auth', authRoutes);
+app.use('/api/billing/paypal', paypalRoutes);
 // Meeting Session API endpoints (protected)
 app.post('/api/sessions', authenticate, async (req, res) => {
     try {

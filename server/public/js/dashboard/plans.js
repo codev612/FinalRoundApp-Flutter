@@ -8,6 +8,10 @@ function renderPlansInto(containerId, currentPlanKey) {
     const isCurrent = p.key === currentPlanKey;
     const div = document.createElement('div');
     div.className = 'plan' + (isCurrent ? ' current' : '');
+    const isBilling = containerId === 'plansBilling';
+    const paypalSlot = (!isCurrent && isBilling)
+      ? `<div class="paypalWrap"><div id="paypalBtn_${p.key}"></div><div class="muted" id="paypalNote_${p.key}" style="margin-top:8px;"></div></div>`
+      : '';
     div.innerHTML = `
           <div class="name">${p.name}${isCurrent ? '<span class="badge">Current</span>' : ''}</div>
           <ul>
@@ -16,7 +20,7 @@ function renderPlansInto(containerId, currentPlanKey) {
             <li>${fmt(p.requests)} AI requests / month</li>
             <li>Summary: ${p.summary ? 'enabled' : 'not included'}</li>
           </ul>
-          ${isCurrent ? '' : '<button class="btn btn-primary cta" disabled>Upgrade (coming soon)</button>'}
+          ${paypalSlot}
         `;
     plansEl.appendChild(div);
   });
