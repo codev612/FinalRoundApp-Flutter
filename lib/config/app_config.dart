@@ -1,16 +1,16 @@
 class AppConfig {
-  static const String defaultServerWebSocketUrl = 'ws://localhost:3000/listen';
-  static const String defaultServerHttpBaseUrl = 'http://localhost:3000';
+  static const String defaultServerWebSocketUrl = 'wss://app.finalroundapp.com/listen';
+  static const String defaultServerHttpBaseUrl = 'https://app.finalroundapp.com';
 
   /// Override at build/run time with:
-  /// `--dart-define=HEARNOW_SERVER_URL=ws://<host>:3000/listen`
+  /// `--dart-define=HEARNOW_SERVER_URL=wss://app.finalroundapp.com/listen`
   static const String serverWebSocketUrl = String.fromEnvironment(
     'HEARNOW_SERVER_URL',
     defaultValue: defaultServerWebSocketUrl,
   );
 
   /// Override at build/run time with:
-  /// `--dart-define=HEARNOW_SERVER_HTTP_BASE_URL=http://<host>:3000`
+  /// `--dart-define=HEARNOW_SERVER_HTTP_BASE_URL=https://app.finalroundapp.com`
   static const String serverHttpBaseUrlOverride = String.fromEnvironment(
     'HEARNOW_SERVER_HTTP_BASE_URL',
     defaultValue: '',

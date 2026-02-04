@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/meeting_mode.dart';
 import '../models/custom_meeting_mode.dart';
 import '../config/app_config.dart';
+import 'http_client_service.dart';
 
 /// Display info for mode dropdown / list. [modeKey] is enum name or "custom:{id}".
 class ModeDisplay {
@@ -96,7 +97,7 @@ class MeetingModeService {
     if (_authToken != null && _authToken!.isNotEmpty) {
       try {
         final url = _getApiUrl('/api/mode-configs');
-        final response = await http.get(
+        final response = await HttpClientService.client.get(
           Uri.parse(url),
           headers: _getHeaders(),
         );
@@ -140,7 +141,7 @@ class MeetingModeService {
     if (_authToken != null && _authToken!.isNotEmpty) {
       try {
         final url = _getApiUrl('/api/mode-configs/${config.mode.name}');
-        final response = await http.put(
+        final response = await HttpClientService.client.put(
           Uri.parse(url),
           headers: _getHeaders(),
           body: jsonEncode(config.toJson()),
@@ -216,7 +217,7 @@ class MeetingModeService {
     if (_authToken != null && _authToken!.isNotEmpty) {
       try {
         final url = _getApiUrl('/api/custom-mode-configs');
-        final response = await http.get(Uri.parse(url), headers: _getHeaders());
+        final response = await HttpClientService.client.get(Uri.parse(url), headers: _getHeaders());
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body) as List<dynamic>;
           final apiList = (data.map((e) => CustomMeetingMode.fromJson(e as Map<String, dynamic>))).toList();
@@ -296,7 +297,7 @@ class MeetingModeService {
       'Content-Type': 'application/json',
       'Authorization': 'Bearer $tokenToUse',
     };
-    final response = await http.delete(Uri.parse(url), headers: headers);
+    final response = await HttpClientService.client.delete(Uri.parse(url), headers: headers);
     debugPrint('[RemoveMode] deleteCustomMode response: status=${response.statusCode} body=${response.body}');
     if (response.statusCode != 200 && response.statusCode != 201) {
       throw Exception('Failed to delete custom mode: ${response.statusCode} ${response.body}');
@@ -304,7 +305,7 @@ class MeetingModeService {
     // Refresh from API only — do not use getCustomModes() here, it merges with cache
     // and would bring the deleted mode back (cache is still stale).
     final getUrl = _getApiUrl('/api/custom-mode-configs');
-    final getResponse = await http.get(Uri.parse(getUrl), headers: headers);
+    final getResponse = await HttpClientService.client.get(Uri.parse(getUrl), headers: headers);
     if (getResponse.statusCode == 200) {
       final data = jsonDecode(getResponse.body) as List<dynamic>;
       final list = (data.map((e) => CustomMeetingMode.fromJson(e as Map<String, dynamic>))).toList();
@@ -320,7 +321,7 @@ class MeetingModeService {
     if (_authToken != null && _authToken!.isNotEmpty) {
       final url = _getApiUrl('/api/custom-mode-configs');
       final body = jsonEncode(list.map((e) => e.toJson()).toList());
-      final response = await http.put(
+      final response = await HttpClientService.client.put(
         Uri.parse(url),
         headers: _getHeaders(),
         body: body,

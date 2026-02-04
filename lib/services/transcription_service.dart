@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'http_client_service.dart';
 
 class TranscriptionService {
   WebSocketChannel? _channel;
@@ -41,7 +42,7 @@ class TranscriptionService {
           'token': _authToken!,
         }).toString();
       }
-      _channel = WebSocketChannel.connect(Uri.parse(wsUrl));
+      _channel = HttpClientService.createWebSocketChannel(Uri.parse(wsUrl));
 
       // Cancel any existing subscription first
       _channelSubscription?.cancel();

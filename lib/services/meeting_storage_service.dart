@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/meeting_session.dart';
 import '../config/app_config.dart';
+import 'http_client_service.dart';
 
 class MeetingStorageService {
   String? _authToken;
@@ -40,7 +41,7 @@ class MeetingStorageService {
       
       if (isValidObjectId) {
         // Try to update existing session
-        final response = await http.put(
+        final response = await HttpClientService.client.put(
           Uri.parse('$url/${session.id}'),
           headers: _getHeaders(),
           body: jsonEncode(body),
@@ -52,7 +53,7 @@ class MeetingStorageService {
           return MeetingSession.fromJson(data);
         } else if (response.statusCode == 404) {
           // Session doesn't exist, create it
-          final createResponse = await http.post(
+          final createResponse = await HttpClientService.client.post(
             Uri.parse(url),
             headers: _getHeaders(),
             body: jsonEncode(body),
@@ -70,7 +71,7 @@ class MeetingStorageService {
         }
       } else {
         // Not a valid ObjectId, create new session
-        final createResponse = await http.post(
+        final createResponse = await HttpClientService.client.post(
           Uri.parse(url),
           headers: _getHeaders(),
           body: jsonEncode(body),
@@ -91,7 +92,7 @@ class MeetingStorageService {
   Future<MeetingSession?> loadSession(String sessionId) async {
     try {
       final url = _getApiUrl('/api/sessions/$sessionId');
-      final response = await http.get(
+      final response = await HttpClientService.client.get(
         Uri.parse(url),
         headers: _getHeaders(),
       );
@@ -130,7 +131,7 @@ class MeetingStorageService {
         },
       );
       
-      final response = await http.get(
+      final response = await HttpClientService.client.get(
         uri,
         headers: _getHeaders(),
       );
@@ -176,7 +177,7 @@ class MeetingStorageService {
         },
       );
       
-      final response = await http.get(
+      final response = await HttpClientService.client.get(
         uri,
         headers: _getHeaders(),
       );
@@ -200,7 +201,7 @@ class MeetingStorageService {
   Future<void> deleteSession(String sessionId) async {
     try {
       final url = _getApiUrl('/api/sessions/$sessionId');
-      final response = await http.delete(
+      final response = await HttpClientService.client.delete(
         Uri.parse(url),
         headers: _getHeaders(),
       );

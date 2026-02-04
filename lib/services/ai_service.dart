@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'http_client_service.dart';
 
 /// AI client that can call the backend via HTTP or via WebSocket streaming.
 class AiService {
@@ -56,7 +57,7 @@ class AiService {
     }).toString();
 
     print('[AiService] Connecting to AI WebSocket: $wsUrl');
-    _aiChannel = WebSocketChannel.connect(Uri.parse(wsUrl));
+    _aiChannel = HttpClientService.createWebSocketChannel(Uri.parse(wsUrl));
     print('[AiService] AI WebSocket connected (reused for multiple requests)');
     _aiSub = _aiChannel!.stream.listen(
       (message) {
@@ -309,7 +310,7 @@ class AiService {
       headers['Authorization'] = 'Bearer $_authToken';
     }
 
-    final response = await http
+    final response = await HttpClientService.client
         .post(
           uri,
           headers: headers,

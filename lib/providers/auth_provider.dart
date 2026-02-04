@@ -6,6 +6,7 @@ import 'dart:async';
 import 'dart:io' show Platform;
 import 'dart:math' as math;
 import '../config/app_config.dart';
+import '../services/http_client_service.dart';
 
 class AuthProvider extends ChangeNotifier {
   String? _token;
@@ -70,7 +71,7 @@ class AuthProvider extends ChangeNotifier {
     
     try {
       final uri = Uri.parse(AppConfig.serverHttpBaseUrl).resolve('/api/auth/me');
-      final response = await http.get(
+      final response = await HttpClientService.client.get(
         uri,
         headers: {
           'Authorization': 'Bearer $_token',
@@ -175,7 +176,7 @@ class AuthProvider extends ChangeNotifier {
         deviceId = 'device_${DateTime.now().microsecondsSinceEpoch}_$rand';
         await prefs.setString('device_id', deviceId);
       }
-      final response = await http.post(
+      final response = await HttpClientService.client.post(
         uri,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
@@ -277,7 +278,7 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
     try {
       final uri = Uri.parse(AppConfig.serverHttpBaseUrl).resolve('/api/auth/verify-login-challenge');
-      final response = await http.post(
+      final response = await HttpClientService.client.post(
         uri,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'challengeId': id, 'code': code.trim()}),
@@ -324,7 +325,7 @@ class AuthProvider extends ChangeNotifier {
 
     try {
       final uri = Uri.parse(AppConfig.serverHttpBaseUrl).resolve('/api/auth/signup');
-      final response = await http.post(
+      final response = await HttpClientService.client.post(
         uri,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
@@ -365,7 +366,7 @@ class AuthProvider extends ChangeNotifier {
 
     try {
       final uri = Uri.parse(AppConfig.serverHttpBaseUrl).resolve('/api/auth/verify-email');
-      final response = await http.post(
+      final response = await HttpClientService.client.post(
         uri,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
@@ -402,7 +403,7 @@ class AuthProvider extends ChangeNotifier {
 
     try {
       final uri = Uri.parse(AppConfig.serverHttpBaseUrl).resolve('/api/auth/resend-verification');
-      final response = await http.post(
+      final response = await HttpClientService.client.post(
         uri,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
@@ -455,7 +456,7 @@ class AuthProvider extends ChangeNotifier {
     
     try {
       final uri = Uri.parse(AppConfig.serverHttpBaseUrl).resolve('/api/auth/me');
-      final response = await http.get(
+      final response = await HttpClientService.client.get(
         uri,
         headers: {
           'Authorization': 'Bearer $_token',
@@ -487,7 +488,7 @@ class AuthProvider extends ChangeNotifier {
 
     try {
       final uri = Uri.parse(AppConfig.serverHttpBaseUrl).resolve('/api/auth/profile');
-      final response = await http.put(
+      final response = await HttpClientService.client.put(
         uri,
         headers: {
           'Authorization': 'Bearer $_token',
@@ -546,7 +547,7 @@ class AuthProvider extends ChangeNotifier {
 
     try {
       final uri = Uri.parse(AppConfig.serverHttpBaseUrl).resolve('/api/auth/change-password');
-      final response = await http.put(
+      final response = await HttpClientService.client.put(
         uri,
         headers: {
           'Authorization': 'Bearer $_token',
@@ -588,7 +589,7 @@ class AuthProvider extends ChangeNotifier {
 
     try {
       final uri = Uri.parse(AppConfig.serverHttpBaseUrl).resolve('/api/auth/verify-current-email-change');
-      final response = await http.post(
+      final response = await HttpClientService.client.post(
         uri,
         headers: {
           'Authorization': 'Bearer $_token',
@@ -629,7 +630,7 @@ class AuthProvider extends ChangeNotifier {
 
     try {
       final uri = Uri.parse(AppConfig.serverHttpBaseUrl).resolve('/api/auth/verify-new-email-change');
-      final response = await http.post(
+      final response = await HttpClientService.client.post(
         uri,
         headers: {
           'Authorization': 'Bearer $_token',
@@ -682,7 +683,7 @@ class AuthProvider extends ChangeNotifier {
 
     try {
       final uri = Uri.parse(AppConfig.serverHttpBaseUrl).resolve('/api/auth/cancel-email-change');
-      final response = await http.post(
+      final response = await HttpClientService.client.post(
         uri,
         headers: {
           'Authorization': 'Bearer $_token',
@@ -718,7 +719,7 @@ class AuthProvider extends ChangeNotifier {
 
     try {
       final uri = Uri.parse(AppConfig.serverHttpBaseUrl).resolve('/api/auth/forgot-password');
-      final response = await http.post(
+      final response = await HttpClientService.client.post(
         uri,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
@@ -755,7 +756,7 @@ class AuthProvider extends ChangeNotifier {
 
     try {
       final uri = Uri.parse(AppConfig.serverHttpBaseUrl).resolve('/api/auth/reset-password');
-      final response = await http.post(
+      final response = await HttpClientService.client.post(
         uri,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({

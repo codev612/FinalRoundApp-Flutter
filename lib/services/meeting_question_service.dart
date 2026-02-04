@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/custom_question_template.dart';
 import '../config/app_config.dart';
+import 'http_client_service.dart';
 
 class MeetingQuestionService {
   static const String _customQuestionsKey = 'custom_question_templates';
@@ -66,7 +67,7 @@ class MeetingQuestionService {
       try {
         final url = _getApiUrl('/api/question-templates');
         print('[QuestionService] Loading templates from DB: $url');
-        final response = await http.get(Uri.parse(url), headers: _getHeaders());
+        final response = await HttpClientService.client.get(Uri.parse(url), headers: _getHeaders());
         print('[QuestionService] Load response: ${response.statusCode}');
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body) as List<dynamic>;
@@ -140,7 +141,7 @@ class MeetingQuestionService {
     if (_authToken != null && _authToken!.isNotEmpty) {
       try {
         final url = _getApiUrl('/api/question-templates/${Uri.encodeComponent(id)}');
-        final response = await http.delete(Uri.parse(url), headers: _getHeaders());
+        final response = await HttpClientService.client.delete(Uri.parse(url), headers: _getHeaders());
         if (response.statusCode == 200) {
           // Successfully deleted from DB, update cache
           final list = await getCustomTemplates();
@@ -170,7 +171,7 @@ class MeetingQuestionService {
         final url = _getApiUrl('/api/question-templates');
         final body = jsonEncode(list.map((e) => e.toJson()).toList());
         print('[QuestionService] Saving ${list.length} templates to DB');
-        final response = await http.put(
+        final response = await HttpClientService.client.put(
           Uri.parse(url),
           headers: _getHeaders(),
           body: body,

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../config/app_config.dart';
+import 'http_client_service.dart';
 
 class BillingInfo {
   final String plan; // free, pro, pro_plus
@@ -109,7 +110,7 @@ class BillingService {
 
   Future<BillingInfo> getMe() async {
     final uri = Uri.parse(_apiUrl('/api/billing/me'));
-    final response = await http.get(uri, headers: _headers()).timeout(const Duration(seconds: 10));
+    final response = await HttpClientService.client.get(uri, headers: _headers()).timeout(const Duration(seconds: 10));
     if (response.statusCode < 200 || response.statusCode >= 300) {
       try {
         final data = jsonDecode(response.body);

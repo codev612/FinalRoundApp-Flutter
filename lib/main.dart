@@ -11,6 +11,7 @@ import 'providers/auth_provider.dart';
 import 'providers/theme_provider.dart';
 import 'services/ai_service.dart';
 import 'services/appearance_service.dart';
+import 'services/http_client_service.dart';
 import 'config/app_config.dart';
 import 'screens/app_shell.dart';
 
@@ -78,6 +79,11 @@ Future<void> initSystemTray() async {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialize HTTP client
+  // On Windows desktop, certificate validation is bypassed due to BoringSSL limitations
+  // On web, proper certificate validation is used (browsers handle it correctly)
+  HttpClientService.initialize();
   
   // Initialize window manager for transparency and always-on-top (Windows only)
   if (Platform.isWindows) {
