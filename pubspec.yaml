@@ -60,6 +60,9 @@ dependencies:
   
   # Preferences storage for shortcuts
   shared_preferences: ^2.2.2
+  
+  # URL launcher for opening external URLs
+  url_launcher: ^6.3.1
 
 dev_dependencies:
   flutter_test:

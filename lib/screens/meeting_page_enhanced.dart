@@ -185,6 +185,13 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
         authToken: authToken,
       );
       
+      // Set up plan update callback to refresh billing info when plan changes
+      _speechProvider!.setOnPlanUpdated(() {
+        if (mounted) {
+          _refreshBilling();
+        }
+      });
+      
       // Update AI service with auth token (but don't restore session here - we'll handle it below)
       _meetingProvider!.setAuthTokensOnly(authToken);
       _questionService?.setAuthToken(authToken);

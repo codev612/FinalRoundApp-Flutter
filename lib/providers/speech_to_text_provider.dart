@@ -68,6 +68,7 @@ class SpeechToTextProvider extends ChangeNotifier {
   // Auto ask callback - called when a question is detected from others
   Function(String)? _onQuestionDetected;
   Future<void> Function()? _onAuthInvalidated;
+  VoidCallback? _onPlanUpdated;
 
   bool get isRecording => _isRecording;
   
@@ -88,6 +89,16 @@ class SpeechToTextProvider extends ChangeNotifier {
       final f = _onAuthInvalidated;
       if (f != null) {
         // ignore: unawaited_futures
+        f();
+      }
+    });
+  }
+
+  void setOnPlanUpdated(VoidCallback? cb) {
+    _onPlanUpdated = cb;
+    _transcriptionService?.setOnPlanUpdated(() {
+      final f = _onPlanUpdated;
+      if (f != null) {
         f();
       }
     });
@@ -406,6 +417,16 @@ class SpeechToTextProvider extends ChangeNotifier {
         final f = _onAuthInvalidated;
         if (f != null) {
           // ignore: unawaited_futures
+          f();
+        }
+      });
+    }
+
+    // Wire plan update callback if set
+    if (_onPlanUpdated != null) {
+      _transcriptionService?.setOnPlanUpdated(() {
+        final f = _onPlanUpdated;
+        if (f != null) {
           f();
         }
       });

@@ -14,6 +14,7 @@ class TranscriptionService {
   final String serverUrl;
   String? _authToken;
   VoidCallback? _onSessionRevoked;
+  VoidCallback? _onPlanUpdated;
   final StreamController<TranscriptionResult> _transcriptController =
       StreamController<TranscriptionResult>.broadcast();
 
@@ -25,6 +26,10 @@ class TranscriptionService {
 
   void setOnSessionRevoked(VoidCallback? cb) {
     _onSessionRevoked = cb;
+  }
+
+  void setOnPlanUpdated(VoidCallback? cb) {
+    _onPlanUpdated = cb;
   }
 
   Stream<TranscriptionResult> get transcriptStream => _transcriptController.stream;
@@ -83,6 +88,17 @@ class TranscriptionService {
           }
 
           if (data['type'] == 'status') {
+            return;
+          }
+
+          if (data['type'] == 'plan_update') {
+            // Plan was updated on the backend, notify listeners to refresh billing info
+            print('[TranscriptionService] Plan update received: ${data['plan']}, notifying listeners');
+            try {
+              _onPlanUpdated?.call();
+            } catch (e) {
+              print('[TranscriptionService] Error in plan update callback: $e');
+            }
             return;
           }
 

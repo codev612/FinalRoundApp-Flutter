@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'dart:io' show Platform;
 import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../config/app_config.dart';
 import '../providers/shortcuts_provider.dart';
@@ -12,6 +13,7 @@ import '../providers/theme_provider.dart';
 import '../services/shortcuts_service.dart';
 import '../services/appearance_service.dart';
 import '../services/billing_service.dart';
+import '../providers/speech_to_text_provider.dart';
 import 'email_change_verification_dialog.dart';
 import 'manage_mode_page.dart';
 import 'manage_question_templates_page.dart';
@@ -1513,6 +1515,19 @@ class _PlanUsageSettingsState extends State<_PlanUsageSettings> {
       _lastToken = token;
       _billing.setAuthToken(token);
       _refresh();
+      
+      // Set up plan update callback to refresh billing info when plan changes
+      try {
+        final speechProvider = context.read<SpeechToTextProvider>();
+        speechProvider.setOnPlanUpdated(() {
+          if (mounted) {
+            _refresh();
+          }
+        });
+      } catch (e) {
+        // SpeechToTextProvider might not be available in all contexts, ignore
+        print('[PlanUsageSettings] Could not set plan update callback: $e');
+      }
     }
   }
 
@@ -1553,33 +1568,64 @@ class _PlanUsageSettingsState extends State<_PlanUsageSettings> {
 
   String _fmtInt(int n) => n.toString();
 
+  /// Format billing period for display. Server sends [start, end) in UTC
+  /// (calendar month). Show date-only in UTC so the period is unambiguous.
+  String _formatBillingPeriod(DateTime periodStartUtc, DateTime periodEndUtc) {
+    // end is exclusive (first day of next period); last day = end - 1 day
+    final lastDayUtc = periodEndUtc.subtract(const Duration(days: 1));
+    final y1 = periodStartUtc.year;
+    final m1 = periodStartUtc.month.toString().padLeft(2, '0');
+    final d1 = periodStartUtc.day.toString().padLeft(2, '0');
+    final y2 = lastDayUtc.year;
+    final m2 = lastDayUtc.month.toString().padLeft(2, '0');
+    final d2 = lastDayUtc.day.toString().padLeft(2, '0');
+    return '$y1-$m1-$d1 – $y2-$m2-$d2 (UTC)';
+  }
+
+  String _fmtNumber(int n) {
+    if (n >= 1000000000) {
+      final b = n / 1000000000.0;
+      return b % 1 == 0 ? '${b.toInt()}B' : '${b.toStringAsFixed(1)}B';
+    } else if (n >= 1000000) {
+      final m = n / 1000000.0;
+      return m % 1 == 0 ? '${m.toInt()}M' : '${m.toStringAsFixed(1)}M';
+    } else if (n >= 1000) {
+      final k = n / 1000.0;
+      return k % 1 == 0 ? '${k.toInt()}K' : '${k.toStringAsFixed(1)}K';
+    }
+    return n.toString();
+  }
+
   static const List<String> _planOrder = ['free', 'pro', 'pro_plus'];
 
-  // Keep these in sync with server `planEntitlements()` (server/src/server.ts).
+  // Keep these in sync with server `PLAN_CONFIGS` (server/src/server.ts).
   static const _PlanOffer _freePlan = _PlanOffer(
     key: 'free',
     name: 'Free',
-    minutesPerMonth: 600,
+    price: 0,
+    minutesPerMonth: 65,
     aiTokensPerMonth: 50000,
     aiRequestsPerMonth: 200,
     canUseSummary: false,
-    allowedModels: ['gpt-4.1-mini', 'gpt-4.1'],
+    allowedModels: ['gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini'],
   );
   static const _PlanOffer _proPlan = _PlanOffer(
     key: 'pro',
     name: 'Pro',
-    minutesPerMonth: 1500,
-    aiTokensPerMonth: 500000,
-    aiRequestsPerMonth: 5000,
+    price: 20,
+    minutesPerMonth: 600,
+    aiTokensPerMonth: 1300000,
+    aiRequestsPerMonth: 3000,
     canUseSummary: true,
     allowedModels: ['gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'],
   );
   static const _PlanOffer _proPlusPlan = _PlanOffer(
     key: 'pro_plus',
     name: 'Pro+',
-    minutesPerMonth: 6000,
-    aiTokensPerMonth: 2000000,
-    aiRequestsPerMonth: 20000,
+    price: 50,
+    minutesPerMonth: 1700,
+    aiTokensPerMonth: 3000000,
+    aiRequestsPerMonth: 15000,
     canUseSummary: true,
     allowedModels: ['gpt-5.2', 'gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'],
   );
@@ -1595,6 +1641,27 @@ class _PlanUsageSettingsState extends State<_PlanUsageSettings> {
   List<_PlanOffer> _upgradablePlans(String currentPlanKey) {
     final cur = _planRank(currentPlanKey);
     return _allPlans().where((p) => _planRank(p.key) >= cur).toList(growable: false);
+  }
+
+  Future<void> _openBillingPage() async {
+    final url = Uri.parse('https://app.finalroundapp.com/dashboard#billing');
+    try {
+      if (await canLaunchUrl(url)) {
+        await launchUrl(url, mode: LaunchMode.externalApplication);
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Could not open billing page')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error opening billing page: $e')),
+        );
+      }
+    }
   }
 
   @override
@@ -1655,18 +1722,25 @@ class _PlanUsageSettingsState extends State<_PlanUsageSettings> {
               leading: const Icon(Icons.workspace_premium),
               title: Text('Current plan: ${_planLabel(info.plan)}'),
               subtitle: Text(
-                'Billing period: ${info.periodStartUtc.toLocal().toString().split(".").first} → ${info.periodEndUtc.toLocal().toString().split(".").first}',
+                'Billing period: ${_formatBillingPeriod(info.periodStartUtc, info.periodEndUtc)}',
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
               ),
+              trailing: info.plan.trim().toLowerCase() != 'free'
+                  ? TextButton(
+                      onPressed: _openBillingPage,
+                      child: const Text('Manage'),
+                    )
+                  : null,
             ),
           ),
           const SizedBox(height: 12),
           Text('Plans', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
           const SizedBox(height: 8),
-          ..._upgradablePlans(info.plan).map((p) {
+          ..._allPlans().map((p) {
             final isCurrent = p.key == info.plan.trim().toLowerCase();
             final isUpgrade = !isCurrent && _planRank(p.key) > _planRank(info.plan);
+            final isDowngrade = !isCurrent && _planRank(p.key) < _planRank(info.plan);
             return Padding(
               padding: const EdgeInsets.only(bottom: 10),
               child: Card(
@@ -1685,9 +1759,30 @@ class _PlanUsageSettingsState extends State<_PlanUsageSettings> {
                       Row(
                         children: [
                           Expanded(
-                            child: Text(
-                              p.name,
-                              style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  p.name,
+                                  style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+                                ),
+                                if (p.price > 0)
+                                  Text(
+                                    '\$${_fmtInt(p.price)}/month',
+                                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: Theme.of(context).colorScheme.primary,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  )
+                                else
+                                  Text(
+                                    'Free',
+                                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: Theme.of(context).colorScheme.primary,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                              ],
                             ),
                           ),
                           if (isCurrent)
@@ -1699,23 +1794,24 @@ class _PlanUsageSettingsState extends State<_PlanUsageSettings> {
                             )
                           else if (isUpgrade)
                             FilledButton(
-                              onPressed: () {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(content: Text('Upgrade flow not wired yet.')),
-                                );
-                              },
+                              onPressed: _openBillingPage,
                               child: const Text('Upgrade'),
+                            )
+                          else if (isDowngrade)
+                            OutlinedButton(
+                              onPressed: _openBillingPage,
+                              child: const Text('Downgrade'),
                             ),
                         ],
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        '${_fmtInt(p.minutesPerMonth)} transcription minutes / month',
+                        '${_fmtNumber(p.minutesPerMonth)} transcription minutes / month',
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        '${_fmtInt(p.aiTokensPerMonth)} AI tokens / month • ${_fmtInt(p.aiRequestsPerMonth)} requests / month',
+                        '${_fmtNumber(p.aiTokensPerMonth)} AI tokens / month • ${_fmtNumber(p.aiRequestsPerMonth)} requests / month',
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
                       const SizedBox(height: 4),
@@ -1856,6 +1952,7 @@ class _PlanUsageSettingsState extends State<_PlanUsageSettings> {
 class _PlanOffer {
   final String key; // free, pro, pro_plus
   final String name;
+  final int price; // Price in USD per month
   final int minutesPerMonth;
   final int aiTokensPerMonth;
   final int aiRequestsPerMonth;
@@ -1865,6 +1962,7 @@ class _PlanOffer {
   const _PlanOffer({
     required this.key,
     required this.name,
+    required this.price,
     required this.minutesPerMonth,
     required this.aiTokensPerMonth,
     required this.aiRequestsPerMonth,
