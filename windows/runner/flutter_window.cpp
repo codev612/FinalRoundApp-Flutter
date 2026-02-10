@@ -717,7 +717,7 @@ bool FlutterWindow::OnCreate() {
   // Setup method channel for audio
   auto audioChannel =
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
-          flutter_controller_->engine()->messenger(), "com.hearnow/audio",
+          flutter_controller_->engine()->messenger(), "com.finalround/audio",
           &flutter::StandardMethodCodec::GetInstance());
 
   audioChannel->SetMethodCallHandler(
@@ -769,7 +769,7 @@ bool FlutterWindow::OnCreate() {
   // Setup method channel for window settings
   auto windowChannel =
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
-          flutter_controller_->engine()->messenger(), "com.hearnow/window",
+          flutter_controller_->engine()->messenger(), "com.finalround/window",
           &flutter::StandardMethodCodec::GetInstance());
 
   windowChannel->SetMethodCallHandler(

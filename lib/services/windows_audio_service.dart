@@ -2,7 +2,7 @@ import 'package:flutter/services.dart';
 import 'dart:typed_data';
 
 class WindowsAudioService {
-  static const platform = MethodChannel('com.hearnow/audio');
+  static const platform = MethodChannel('com.finalround/audio');
 
   /// Start capturing system audio (Windows Stereo Mix / Loopback)
   static Future<bool> startSystemAudioCapture() async {

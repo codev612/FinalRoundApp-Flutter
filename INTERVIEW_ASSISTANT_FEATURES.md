@@ -141,9 +141,9 @@ After recording some conversation:
 ## File Storage
 
 Sessions are stored locally in the application's documents directory:
-- **Windows**: `%APPDATA%\hearnow\interview_sessions\`
-- **macOS**: `~/Library/Application Support/hearnow/interview_sessions/`
-- **Linux**: `~/.local/share/hearnow/interview_sessions/`
+- **Windows**: `%APPDATA%\FinalRound\interview_sessions\`
+- **macOS**: `~/Library/Application Support/FinalRound/interview_sessions/`
+- **Linux**: `~/.local/share/FinalRound/interview_sessions/`
 - **Android**: App-specific storage
 - **iOS**: App-specific storage
 

@@ -1,4 +1,4 @@
-package com.hearnow.hearnow
+package com.finalround.finalround
 
 import io.flutter.embedding.android.FlutterActivity
 

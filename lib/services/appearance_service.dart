@@ -7,7 +7,7 @@ class AppearanceService {
   static const String _keyUndetectable = 'appearance_undetectable';
   static const String _keySkipTaskbar = 'appearance_skip_taskbar';
   static const String _keyThemeMode = 'theme_mode';
-  static const MethodChannel _channel = MethodChannel('com.hearnow/window');
+  static const MethodChannel _channel = MethodChannel('com.finalround/window');
 
   /// Load undetectable setting
   static Future<bool> getUndetectable() async {

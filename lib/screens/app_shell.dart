@@ -7,11 +7,13 @@ import 'dart:io' show Platform;
 import 'home_page.dart';
 import 'settings_page.dart';
 import 'meeting_page_enhanced.dart';
+import 'notifications_page.dart';
 import 'signin_page.dart';
 import '../providers/shortcuts_provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/meeting_provider.dart';
 import '../providers/speech_to_text_provider.dart';
+import '../providers/notification_provider.dart';
 
 class AppShell extends StatefulWidget {
   const AppShell({super.key});
@@ -79,11 +81,15 @@ class _AppShellState extends State<AppShell> with WindowListener {
         
         // Update auth token whenever auth state changes
         if (isAuthenticated) {
-          meetingProvider.updateAuthToken(authProvider.token);
-          speechProvider.updateAuthToken(authProvider.token);
+          final token = authProvider.token;
+          meetingProvider.updateAuthToken(token);
+          speechProvider.updateAuthToken(token);
+          context.read<NotificationProvider>().updateAuthToken(token);
           speechProvider.setOnAuthInvalidated(() async {
             await authProvider.signOut();
           });
+        } else {
+          context.read<NotificationProvider>().updateAuthToken(null);
         }
         
         // Show signin page if not authenticated
@@ -146,61 +152,48 @@ class _AppShellState extends State<AppShell> with WindowListener {
               autofocus: true,
               child: Scaffold(
             backgroundColor: Colors.transparent,
-            body: Stack(
-        children: [
-          // Title bar background for visibility
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            height: 32, // Standard Windows title bar height
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.6),
+            body: SafeArea(
+              child: IndexedStack(
+                index: displayIndex,
+                children: [
+                  // Home page with opaque background
+                  Container(
+                    color: Theme.of(context).colorScheme.surface,
+                    child: HomePage(
+                      onStartMeeting: () async {
+                        // Clear current session and create a new one when starting a new meeting
+                        final meetingProvider = context.read<MeetingProvider>();
+                        final speechProvider = context.read<SpeechToTextProvider>();
+                        await meetingProvider.clearCurrentSession();
+                        // Clear speech provider bubbles to start fresh
+                        speechProvider.clearTranscript();
+                        await meetingProvider.createNewSession();
+                        setState(() => _index = 1);
+                      },
+                      onLoadSession: () {
+                        // Just navigate to meeting page when loading an existing session
+                        // The session is already loaded by loadSession() call
+                        setState(() => _index = 1);
+                      },
+                    ),
+                  ),
+                  // Meeting page remains transparent
+                  const MeetingPageEnhanced(),
+                  // Notifications page (uses same background as surface)
+                  NotificationsPage(isActive: displayIndex == 2),
+                  // Settings page with opaque background
+                  Container(
+                    color: Theme.of(context).colorScheme.surface,
+                    child: const SettingsPage(),
+                  ),
+                ],
               ),
             ),
-          ),
-          SafeArea(
-            child: IndexedStack(
-              index: displayIndex,
-              children: [
-                // Home page with opaque background
-                Container(
-                  color: Theme.of(context).colorScheme.surface,
-                  child: HomePage(
-                    onStartMeeting: () async {
-                      // Clear current session and create a new one when starting a new meeting
-                      final meetingProvider = context.read<MeetingProvider>();
-                      final speechProvider = context.read<SpeechToTextProvider>();
-                      await meetingProvider.clearCurrentSession();
-                      // Clear speech provider bubbles to start fresh
-                      speechProvider.clearTranscript();
-                      await meetingProvider.createNewSession();
-                      setState(() => _index = 1);
-                    },
-                    onLoadSession: () {
-                      // Just navigate to meeting page when loading an existing session
-                      // The session is already loaded by loadSession() call
-                      setState(() => _index = 1);
-                    },
-                  ),
-                ),
-                // Meeting page remains transparent
-                const MeetingPageEnhanced(),
-                // Settings page with opaque background
-                Container(
-                  color: Theme.of(context).colorScheme.surface,
-                  child: const SettingsPage(),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-      bottomNavigationBar: Consumer<SpeechToTextProvider>(
-        builder: (context, speechProvider, child) {
+      bottomNavigationBar: Consumer2<SpeechToTextProvider, NotificationProvider>(
+        builder: (context, speechProvider, notificationProvider, child) {
           final isRecording = speechProvider.isRecording;
           final showAlert = isRecording && displayIndex != 1; // Show alert when recording and not on meeting page
+          final hasUnreadNotifications = notificationProvider.hasUnread;
           
           return BottomNavigationBar(
             currentIndex: displayIndex,
@@ -282,6 +275,55 @@ class _AppShellState extends State<AppShell> with WindowListener {
                   ],
                 ),
                 label: 'Meeting',
+              ),
+              BottomNavigationBarItem(
+                icon: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    const Icon(Icons.notifications_outlined),
+                    if (hasUnreadNotifications)
+                      Positioned(
+                        right: -4,
+                        top: -4,
+                        child: Container(
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(
+                            color: Colors.red,
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: Theme.of(context).colorScheme.surface,
+                              width: 2,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                activeIcon: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    const Icon(Icons.notifications),
+                    if (hasUnreadNotifications)
+                      Positioned(
+                        right: -4,
+                        top: -4,
+                        child: Container(
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(
+                            color: Colors.red,
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: Theme.of(context).colorScheme.surface,
+                              width: 2,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                label: 'Notifications',
               ),
               const BottomNavigationBarItem(
                 icon: Icon(Icons.settings_outlined),

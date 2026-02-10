@@ -3,19 +3,24 @@ import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:system_tray/system_tray.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'dart:io' show Platform;
 import 'providers/speech_to_text_provider.dart';
 import 'providers/meeting_provider.dart';
 import 'providers/shortcuts_provider.dart';
 import 'providers/auth_provider.dart';
 import 'providers/theme_provider.dart';
+import 'providers/notification_provider.dart';
 import 'services/ai_service.dart';
 import 'services/appearance_service.dart';
 import 'services/http_client_service.dart';
+import 'services/version_check_service.dart';
 import 'config/app_config.dart';
 import 'screens/app_shell.dart';
 
 final SystemTray systemTray = SystemTray();
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 Future<void> initSystemTray() async {
   if (!Platform.isWindows) return;
@@ -108,8 +113,15 @@ void main() async {
     windowManager.waitUntilReadyToShow(windowOptions, () async {
       await windowManager.setBackgroundColor(Colors.transparent);
       await windowManager.setAlwaysOnTop(true);
-      // Set window title
-      await windowManager.setTitle('FinalRound');
+      // Set window title with version
+      try {
+        final packageInfo = await PackageInfo.fromPlatform();
+        final version = packageInfo.version;
+        await windowManager.setTitle('FinalRound v$version');
+      } catch (e) {
+        // Fallback if package info fails
+        await windowManager.setTitle('FinalRound');
+      }
       // Prevent window from closing - will be handled by onWindowClose
       await windowManager.setPreventClose(true);
       // Set minimum window size
@@ -142,6 +154,117 @@ void main() async {
   }
   
   runApp(const MyApp());
+  
+  // Check for updates after app is fully initialized (non-blocking)
+  Future.delayed(const Duration(seconds: 2), () async {
+    await _checkForUpdates();
+  });
+}
+
+Future<void> _checkForUpdates() async {
+  try {
+    final result = await VersionCheckService.checkForUpdate();
+    if (result != null && result.hasUpdate && result.latestVersion != null) {
+      // Show update dialog after a short delay to ensure app is fully loaded
+      await Future.delayed(const Duration(seconds: 1));
+      _showUpdateDialog(result.latestVersion!);
+    }
+  } catch (e) {
+    // Silently ignore errors - don't interrupt app startup
+    print('[VersionCheck] Error in update check: $e');
+  }
+}
+
+void _showUpdateDialog(LatestVersion latestVersion) {
+  final navigator = navigatorKey.currentState;
+  if (navigator == null) return;
+  
+  showDialog(
+    context: navigator.context,
+    barrierDismissible: false,
+    builder: (context) => AlertDialog(
+      title: const Row(
+        children: [
+          Icon(Icons.system_update, color: Colors.blue),
+          SizedBox(width: 8),
+          Text('Update Available'),
+        ],
+      ),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'A new version of FinalRound is available!',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'New version: ${latestVersion.version}',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+            if (latestVersion.fileSize > 0) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Download size: ${_formatFileSize(latestVersion.fileSize)}',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+            if (latestVersion.releaseNotes.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Text(
+                'Release Notes:',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+              const SizedBox(height: 4),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceVariant.withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  latestVersion.releaseNotes,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Later'),
+        ),
+        FilledButton(
+          onPressed: () async {
+            Navigator.of(context).pop();
+            // Open download URL in browser
+            final downloadUrl = latestVersion.downloadUrl.startsWith('http')
+                ? latestVersion.downloadUrl
+                : '${AppConfig.serverHttpBaseUrl}${latestVersion.downloadUrl}';
+            final uri = Uri.tryParse(downloadUrl);
+            if (uri != null) {
+              try {
+                await launchUrl(uri, mode: LaunchMode.externalApplication);
+              } catch (e) {
+                print('[VersionCheck] Error launching download URL: $e');
+              }
+            }
+          },
+          child: const Text('Download Update'),
+        ),
+      ],
+    ),
+  );
+}
+
+String _formatFileSize(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+  return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
 }
 
 class MyApp extends StatelessWidget {
@@ -156,6 +279,9 @@ class MyApp extends StatelessWidget {
         ),
         ChangeNotifierProvider(
           create: (_) => SpeechToTextProvider(),
+        ),
+        ChangeNotifierProvider(
+          create: (_) => NotificationProvider(),
         ),
         ChangeNotifierProxyProvider<SpeechToTextProvider, MeetingProvider>(
           create: (_) => MeetingProvider(
@@ -198,6 +324,7 @@ class MyApp extends StatelessWidget {
           final baseDarkTextTheme = Typography.material2021(platform: TargetPlatform.windows);
           
           return MaterialApp(
+            navigatorKey: navigatorKey,
             title: 'FinalRound',
             theme: ThemeData(
               colorScheme: ColorScheme.fromSeed(

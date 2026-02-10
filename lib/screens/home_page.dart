@@ -692,48 +692,48 @@ class _HomePageState extends State<HomePage> {
         final grouped = _groupSessionsByDate(sessions);
         final dateKeys = _getSortedDateKeys(grouped);
 
-    return Padding(
+        return Padding(
           padding: const EdgeInsets.symmetric(horizontal: 64),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               // Header with title and start button
               Padding(
                 padding: const EdgeInsets.all(16),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'FinalRound',
-            style: Theme.of(context).textTheme.headlineMedium,
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Meeting assistant with separate mic + system transcripts.',
-            style: Theme.of(context).textTheme.bodyLarge,
-          ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  SizedBox(
-                    width: 140,
-                    child: FilledButton.icon(
-                      onPressed: widget.onStartMeeting,
-                      icon: const Icon(Icons.record_voice_over, size: 18),
-                      label: const Text('Start Meeting', style: TextStyle(fontSize: 13)),
-                      style: FilledButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'FinalRound',
+                            style: Theme.of(context).textTheme.headlineMedium,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Meeting assistant with separate mic + system transcripts.',
+                            style: Theme.of(context).textTheme.bodyLarge,
+                          ),
+                        ],
                       ),
                     ),
-                  ),
-                ],
+                    const SizedBox(width: 16),
+                    SizedBox(
+                      width: 140,
+                      child: FilledButton.icon(
+                        onPressed: widget.onStartMeeting,
+                        icon: const Icon(Icons.record_voice_over, size: 18),
+                        label: const Text('Start Meeting', style: TextStyle(fontSize: 13)),
+                        style: FilledButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
             const Divider(height: 1),
             // Sessions list
             Expanded(

@@ -108,7 +108,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
   final ScrollController _transcriptScrollController = ScrollController();
   final TextEditingController _askAiController = TextEditingController();
   final TextEditingController _aiResponseController = TextEditingController();
-  static const MethodChannel _windowChannel = MethodChannel('com.hearnow/window');
+  static const MethodChannel _windowChannel = MethodChannel('com.finalround/window');
   int _lastBubbleCount = 0;
   String _lastTailSignature = '';
   String _suggestedQuestions = '';

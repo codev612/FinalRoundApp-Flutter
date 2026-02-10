@@ -1,11 +1,11 @@
-# HearNow - Speech to Text Application
+# FinalRound - AI Meeting Assistant
 
 A cross-platform speech-to-text application using **Deepgram Nova 3** with WebSocket integration. Built with **Flutter** for the frontend (Windows, Android, Linux, macOS, iOS) and **Node.js** for the backend.
 
 ## Project Structure
 
 ```
-hearnow/
+finalround/
 ├── backend/              # Node.js server
 │   ├── src/
 │   │   └── server.js    # WebSocket server and Deepgram integration

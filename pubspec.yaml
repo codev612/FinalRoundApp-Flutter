@@ -1,4 +1,4 @@
-name: hearnow
+name: finalround
 description: "Cross-platform AI meeting assistant using Deepgram Nova 3 and OpenAI"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
@@ -63,6 +63,9 @@ dependencies:
   
   # URL launcher for opening external URLs
   url_launcher: ^6.3.1
+  
+  # Package info for reading app version
+  package_info_plus: ^8.1.1
 
 dev_dependencies:
   flutter_test:

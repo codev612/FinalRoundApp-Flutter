@@ -119,33 +119,67 @@ class _MeetingPageState extends State<MeetingPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Status indicator
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Tooltip(
-                  message: provider.isConnected ? 'Connected' : 'Not connected',
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(20),
-                    onTap: () {
-                      // Intentionally no visible text; tooltip conveys state.
-                    },
-                    child: Container(
-                      width: 36,
-                      height: 36,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: provider.isConnected
-                            ? Colors.green.shade500
-                            : Colors.grey.shade400,
-                      ),
-                      child: Icon(
-                        provider.isConnected ? Icons.check : Icons.close,
-                        color: Colors.white,
-                        size: 20,
+              // Status indicator + alarm button
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Tooltip(
+                    message: provider.isConnected ? 'Connected' : 'Not connected',
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(20),
+                      onTap: () {
+                        // Intentionally no visible text; tooltip conveys state.
+                      },
+                      child: Container(
+                        width: 36,
+                        height: 36,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: provider.isConnected
+                              ? Colors.green.shade500
+                              : Colors.grey.shade400,
+                        ),
+                        child: Icon(
+                          provider.isConnected ? Icons.check : Icons.close,
+                          color: Colors.white,
+                          size: 20,
+                        ),
                       ),
                     ),
                   ),
-                ),
+                  IconButton(
+                    icon: const Icon(Icons.alarm),
+                    tooltip: 'Show messages',
+                    onPressed: () {
+                      final hasError = provider.errorMessage.isNotEmpty;
+                      final hasAiError = provider.aiErrorMessage.isNotEmpty;
+                      final messageBuffer = StringBuffer();
+                      if (hasError) {
+                        messageBuffer.writeln('Error: ${provider.errorMessage}');
+                      }
+                      if (hasAiError) {
+                        if (messageBuffer.isNotEmpty) messageBuffer.writeln();
+                        messageBuffer.writeln('AI Error: ${provider.aiErrorMessage}');
+                      }
+                      if (messageBuffer.isEmpty) {
+                        messageBuffer.write('No messages to show.');
+                      }
+                      showDialog(
+                        context: context,
+                        builder: (context) => AlertDialog(
+                          title: const Text('Messages'),
+                          content: Text(messageBuffer.toString()),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.of(context).pop(),
+                              child: const Text('Close'),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ],
               ),
               const SizedBox(height: 16),
 
