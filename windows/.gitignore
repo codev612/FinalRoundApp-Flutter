@@ -1,17 +1,13 @@
-flutter/ephemeral/
+# Installer output
+installer/
 
-# Visual Studio user-specific files.
-*.suo
-*.user
-*.userosscache
-*.sln.docstates
+# Code signing certificates (keep private!)
+*.pfx
+*.p12
+*.key
+*.pem
 
-# Visual Studio build-related files.
-x64/
-x86/
-
-# Visual Studio cache files
-# files ending in .cache can be ignored
-*.[Cc]ache
-# but keep track of directories ending in .cache
-!*.[Cc]ache/
+# Build artifacts
+*.exe
+*.dll
+*.pdb
