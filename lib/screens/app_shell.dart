@@ -14,6 +14,7 @@ import '../providers/auth_provider.dart';
 import '../providers/meeting_provider.dart';
 import '../providers/speech_to_text_provider.dart';
 import '../providers/notification_provider.dart';
+import '../providers/dashboard_provider.dart';
 
 class AppShell extends StatefulWidget {
   const AppShell({super.key});
@@ -85,11 +86,13 @@ class _AppShellState extends State<AppShell> with WindowListener {
           meetingProvider.updateAuthToken(token);
           speechProvider.updateAuthToken(token);
           context.read<NotificationProvider>().updateAuthToken(token);
+          context.read<DashboardProvider>().setAuthToken(token);
           speechProvider.setOnAuthInvalidated(() async {
             await authProvider.signOut();
           });
         } else {
           context.read<NotificationProvider>().updateAuthToken(null);
+          context.read<DashboardProvider>().setAuthToken(null);
         }
         
         // Show signin page if not authenticated

@@ -12,6 +12,7 @@ import 'providers/shortcuts_provider.dart';
 import 'providers/auth_provider.dart';
 import 'providers/theme_provider.dart';
 import 'providers/notification_provider.dart';
+import 'providers/dashboard_provider.dart';
 import 'services/ai_service.dart';
 import 'services/appearance_service.dart';
 import 'services/http_client_service.dart';
@@ -303,6 +304,14 @@ class MyApp extends StatelessWidget {
         ),
         ChangeNotifierProvider(
           create: (_) => ThemeProvider(),
+        ),
+        ChangeNotifierProxyProvider<MeetingProvider, DashboardProvider>(
+          create: (context) {
+            // Get MeetingProvider from context - it's already created above
+            final meetingProvider = Provider.of<MeetingProvider>(context, listen: false);
+            return DashboardProvider(meetingProvider);
+          },
+          update: (context, meetingProvider, previous) => previous ?? DashboardProvider(meetingProvider),
         ),
       ],
       child: Consumer<ThemeProvider>(

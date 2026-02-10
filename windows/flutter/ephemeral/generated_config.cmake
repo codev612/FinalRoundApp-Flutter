@@ -15,10 +15,10 @@ list(APPEND FLUTTER_TOOL_ENVIRONMENT
   "FLUTTER_ROOT=C:\\flutter"
   "FLUTTER_EPHEMERAL_DIR=D:\\Projects\\FianlRoundApp-Flutter\\windows\\flutter\\ephemeral"
   "PROJECT_DIR=D:\\Projects\\FianlRoundApp-Flutter"
-  "FLUTTER_TARGET=lib\\main.dart"
+  "FLUTTER_TARGET=D:\\Projects\\FianlRoundApp-Flutter\\lib\\main.dart"
   "DART_DEFINES=RkxVVFRFUl9WRVJTSU9OPTMuMzguOQ==,RkxVVFRFUl9DSEFOTkVMPXN0YWJsZQ==,RkxVVFRFUl9HSVRfVVJMPWh0dHBzOi8vZ2l0aHViLmNvbS9mbHV0dGVyL2ZsdXR0ZXIuZ2l0,RkxVVFRFUl9GUkFNRVdPUktfUkVWSVNJT049NjczMjNkZTI4NQ==,RkxVVFRFUl9FTkdJTkVfUkVWSVNJT049NTg3YzE4Zjg3Mw==,RkxVVFRFUl9EQVJUX1ZFUlNJT049My4xMC44"
   "DART_OBFUSCATION=false"
   "TRACK_WIDGET_CREATION=true"
-  "TREE_SHAKE_ICONS=true"
+  "TREE_SHAKE_ICONS=false"
   "PACKAGE_CONFIG=D:\\Projects\\FianlRoundApp-Flutter\\.dart_tool\\package_config.json"
 )

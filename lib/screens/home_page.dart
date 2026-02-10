@@ -4,6 +4,8 @@ import 'package:provider/provider.dart';
 import '../providers/meeting_provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/speech_to_text_provider.dart';
+import '../providers/dashboard_provider.dart';
+import '../widgets/dashboard_widgets.dart';
 import '../models/meeting_session.dart';
 
 class _HoverableListTile extends StatefulWidget {
@@ -532,9 +534,13 @@ class _HomePageState extends State<HomePage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final authProvider = context.read<AuthProvider>();
       final meetingProvider = context.read<MeetingProvider>();
+      final dashboardProvider = context.read<DashboardProvider>();
       // Ensure auth token is set before loading sessions
       meetingProvider.updateAuthToken(authProvider.token);
+      dashboardProvider.setAuthToken(authProvider.token);
       meetingProvider.loadSessions(); // Load all sessions (no pagination for homepage)
+      // Load dashboard stats (will refresh when sessions finish loading)
+      dashboardProvider.loadStats();
     });
   }
 
@@ -548,11 +554,14 @@ class _HomePageState extends State<HomePage> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         final meetingProvider = context.read<MeetingProvider>();
+        final dashboardProvider = context.read<DashboardProvider>();
         // Only reload if we have an auth token (user is logged in)
         final authProvider = context.read<AuthProvider>();
         if (authProvider.token != null && authProvider.token!.isNotEmpty) {
           // Reload all sessions (no pagination for homepage)
           meetingProvider.loadSessions();
+          // Refresh dashboard stats when sessions reload
+          dashboardProvider.refresh();
         }
       });
     }
@@ -700,39 +709,94 @@ class _HomePageState extends State<HomePage> {
               // Header with title and start button
               Padding(
                 padding: const EdgeInsets.all(16),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'FinalRound',
-                            style: Theme.of(context).textTheme.headlineMedium,
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Meeting assistant with separate mic + system transcripts.',
-                            style: Theme.of(context).textTheme.bodyLarge,
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    SizedBox(
-                      width: 140,
-                      child: FilledButton.icon(
-                        onPressed: widget.onStartMeeting,
-                        icon: const Icon(Icons.record_voice_over, size: 18),
-                        label: const Text('Start Meeting', style: TextStyle(fontSize: 13)),
-                        style: FilledButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Image.asset(
+                              'assets/logo.png',
+                              height: 48,
+                              width: 48,
+                              errorBuilder: (context, error, stackTrace) {
+                                // Fallback if logo image is not found
+                                return const SizedBox.shrink();
+                              },
+                            ),
+                            const SizedBox(width: 12),
+                            Text(
+                              'FinalRound',
+                              style: Theme.of(context).textTheme.headlineMedium,
+                            ),
+                          ],
                         ),
-                      ),
+                        SizedBox(
+                          width: 140,
+                          child: FilledButton.icon(
+                            onPressed: widget.onStartMeeting,
+                            icon: const Icon(Icons.record_voice_over, size: 18),
+                            label: const Text('Start Meeting', style: TextStyle(fontSize: 13)),
+                            style: FilledButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'AI-powered meeting assistant that captures and transcribes your meetings in real-time using advanced speech recognition technology.',
+                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                            fontWeight: FontWeight.w500,
+                            height: 1.5,
+                          ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'Key Features:',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 8,
+                      children: [
+                        _FeatureChip(
+                          icon: Icons.mic,
+                          label: 'Dual Audio Capture',
+                          description: 'Separate microphone and system audio transcripts for complete meeting coverage',
+                        ),
+                        _FeatureChip(
+                          icon: Icons.auto_awesome,
+                          label: 'AI-Powered Transcription',
+                          description: 'Real-time speech-to-text with advanced AI models for accurate transcription',
+                        ),
+                        _FeatureChip(
+                          icon: Icons.summarize,
+                          label: 'Smart Summaries',
+                          description: 'Automated meeting summaries, insights, and action items',
+                        ),
+                        _FeatureChip(
+                          icon: Icons.history,
+                          label: 'Session History',
+                          description: 'Access and review all your past meetings with full transcripts',
+                        ),
+                      ],
                     ),
                   ],
                 ),
+              ),
+              // Dashboard widgets
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: const DashboardWidgets(),
               ),
             const Divider(height: 1),
             // Sessions list
@@ -788,6 +852,55 @@ class _HomePageState extends State<HomePage> {
         ),
       );
       },
+    );
+  }
+}
+
+// Feature chip widget for displaying key features
+class _FeatureChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String description;
+
+  const _FeatureChip({
+    required this.icon,
+    required this.label,
+    required this.description,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: description,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.5),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.2),
+            width: 1,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 16,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onPrimaryContainer,
+                    fontWeight: FontWeight.w500,
+                  ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
