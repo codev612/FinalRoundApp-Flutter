@@ -18,6 +18,7 @@ import '../services/meeting_mode_service.dart';
 import '../services/ai_service.dart';
 import '../services/billing_service.dart';
 import '../providers/shortcuts_provider.dart';
+import '../utils/error_message_helper.dart';
 import 'manage_mode_page.dart';
 import 'manage_question_templates_page.dart';
 
@@ -1681,7 +1682,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
       debugPrint('Stack trace: $stackTrace');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error saving session: $e')),
+          SnackBar(content: Text(ErrorMessageHelper.toUserFriendly(e))),
         );
       }
     }

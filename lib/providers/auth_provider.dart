@@ -7,6 +7,7 @@ import 'dart:io' show Platform;
 import 'dart:math' as math;
 import '../config/app_config.dart';
 import '../services/http_client_service.dart';
+import '../utils/error_message_helper.dart';
 
 class AuthProvider extends ChangeNotifier {
   String? _token;
@@ -77,7 +78,7 @@ class AuthProvider extends ChangeNotifier {
           'Authorization': 'Bearer $_token',
           'Content-Type': 'application/json',
         },
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(const Duration(seconds: 3));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -259,7 +260,7 @@ class AuthProvider extends ChangeNotifier {
         return false;
       }
     } catch (e) {
-      _errorMessage = 'Network error: ${e.toString()}';
+      _errorMessage = ErrorMessageHelper.toUserFriendly(e);
       _isLoading = false;
       notifyListeners();
       return false;
@@ -311,7 +312,7 @@ class AuthProvider extends ChangeNotifier {
         return false;
       }
     } catch (e) {
-      _errorMessage = 'Network error: ${e.toString()}';
+      _errorMessage = ErrorMessageHelper.toUserFriendly(e);
       _isLoading = false;
       notifyListeners();
       return false;
@@ -352,7 +353,7 @@ class AuthProvider extends ChangeNotifier {
         return false;
       }
     } catch (e) {
-      _errorMessage = 'Network error: ${e.toString()}';
+      _errorMessage = ErrorMessageHelper.toUserFriendly(e);
       _isLoading = false;
       notifyListeners();
       return false;
@@ -389,7 +390,7 @@ class AuthProvider extends ChangeNotifier {
         return false;
       }
     } catch (e) {
-      _errorMessage = 'Network error: ${e.toString()}';
+      _errorMessage = ErrorMessageHelper.toUserFriendly(e);
       _isLoading = false;
       notifyListeners();
       return false;
@@ -425,7 +426,7 @@ class AuthProvider extends ChangeNotifier {
         return false;
       }
     } catch (e) {
-      _errorMessage = 'Network error: ${e.toString()}';
+      _errorMessage = ErrorMessageHelper.toUserFriendly(e);
       _isLoading = false;
       notifyListeners();
       return false;
@@ -462,7 +463,7 @@ class AuthProvider extends ChangeNotifier {
           'Authorization': 'Bearer $_token',
           'Content-Type': 'application/json',
         },
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(const Duration(seconds: 3));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -475,6 +476,7 @@ class AuthProvider extends ChangeNotifier {
         }
       }
     } catch (e) {
+      // Silently fail - this is a background refresh operation
       print('Error refreshing user info: $e');
     }
   }
@@ -531,7 +533,7 @@ class AuthProvider extends ChangeNotifier {
         return _errorMessage;
       }
     } catch (e) {
-      _errorMessage = 'Network error: ${e.toString()}';
+      _errorMessage = ErrorMessageHelper.toUserFriendly(e);
       _isLoading = false;
       notifyListeners();
       return _errorMessage;
@@ -573,7 +575,7 @@ class AuthProvider extends ChangeNotifier {
         return _errorMessage;
       }
     } catch (e) {
-      _errorMessage = 'Network error: ${e.toString()}';
+      _errorMessage = ErrorMessageHelper.toUserFriendly(e);
       _isLoading = false;
       notifyListeners();
       return _errorMessage;
@@ -614,7 +616,7 @@ class AuthProvider extends ChangeNotifier {
         return _errorMessage;
       }
     } catch (e) {
-      _errorMessage = 'Network error: ${e.toString()}';
+      _errorMessage = ErrorMessageHelper.toUserFriendly(e);
       _isLoading = false;
       notifyListeners();
       return _errorMessage;
@@ -667,7 +669,7 @@ class AuthProvider extends ChangeNotifier {
         return _errorMessage;
       }
     } catch (e) {
-      _errorMessage = 'Network error: ${e.toString()}';
+      _errorMessage = ErrorMessageHelper.toUserFriendly(e);
       _isLoading = false;
       notifyListeners();
       return _errorMessage;
@@ -705,7 +707,7 @@ class AuthProvider extends ChangeNotifier {
         return _errorMessage;
       }
     } catch (e) {
-      _errorMessage = 'Network error: ${e.toString()}';
+      _errorMessage = ErrorMessageHelper.toUserFriendly(e);
       _isLoading = false;
       notifyListeners();
       return _errorMessage;
@@ -742,7 +744,7 @@ class AuthProvider extends ChangeNotifier {
         return false;
       }
     } catch (e) {
-      _errorMessage = 'Network error: ${e.toString()}';
+      _errorMessage = ErrorMessageHelper.toUserFriendly(e);
       _isLoading = false;
       notifyListeners();
       return false;
@@ -779,7 +781,7 @@ class AuthProvider extends ChangeNotifier {
         return false;
       }
     } catch (e) {
-      _errorMessage = 'Network error: ${e.toString()}';
+      _errorMessage = ErrorMessageHelper.toUserFriendly(e);
       _isLoading = false;
       notifyListeners();
       return false;

@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'dart:async';
 import '../services/billing_service.dart';
 import '../providers/meeting_provider.dart';
 
@@ -72,8 +73,13 @@ class DashboardProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // Fetch billing info
-      final billingInfo = await _billingService.getMe();
+      // Fetch billing info with timeout handling
+      final billingInfo = await _billingService.getMe().timeout(
+        const Duration(seconds: 5),
+        onTimeout: () {
+          throw Exception('Request timed out. Please check your connection.');
+        },
+      );
 
       // Calculate total meeting time from all sessions
       final sessions = _meetingProvider.sessions;

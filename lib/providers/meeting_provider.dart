@@ -7,6 +7,7 @@ import '../models/transcript_bubble.dart';
 import '../services/meeting_storage_service.dart';
 import '../services/ai_service.dart';
 import '../services/meeting_mode_service.dart';
+import '../utils/error_message_helper.dart';
 
 class MeetingProvider extends ChangeNotifier {
   final MeetingStorageService _storage = MeetingStorageService();
@@ -141,6 +142,11 @@ class MeetingProvider extends ChangeNotifier {
   List<MeetingSession> get sessions => List.unmodifiable(_sessions);
   bool get isLoading => _isLoading;
   String get errorMessage => _errorMessage;
+
+  void clearError() {
+    _errorMessage = '';
+    notifyListeners();
+  }
   bool get isGeneratingSummary => _isGeneratingSummary;
   bool get isGeneratingInsights => _isGeneratingInsights;
   bool get isGeneratingQuestions => _isGeneratingQuestions;
@@ -167,9 +173,14 @@ class MeetingProvider extends ChangeNotifier {
         limit: limit,
         skip: skip,
         search: search,
+      ).timeout(
+        const Duration(seconds: 5),
+        onTimeout: () {
+          throw Exception('Request timed out. Please check your connection.');
+        },
       );
     } catch (e) {
-      _errorMessage = 'Failed to load sessions: $e';
+      _errorMessage = ErrorMessageHelper.toUserFriendly(e);
     } finally {
       _isLoading = false;
       notifyListeners();
@@ -264,7 +275,7 @@ class MeetingProvider extends ChangeNotifier {
       // Reload all sessions (no pagination) to ensure the newly saved session appears
       await loadSessions(); // No parameters = load all sessions
     } catch (e) {
-      _errorMessage = 'Failed to save session: $e';
+      _errorMessage = ErrorMessageHelper.toUserFriendly(e);
     } finally {
       _isLoading = false;
       notifyListeners();
@@ -299,7 +310,7 @@ class MeetingProvider extends ChangeNotifier {
       }
     } catch (e) {
       print('[MeetingProvider] Error in loadSession: $e');
-      _errorMessage = 'Failed to load session: $e';
+      _errorMessage = ErrorMessageHelper.toUserFriendly(e);
     } finally {
       _isLoading = false;
       notifyListeners();
@@ -318,7 +329,7 @@ class MeetingProvider extends ChangeNotifier {
       }
       await loadSessions();
     } catch (e) {
-      _errorMessage = 'Failed to delete session: $e';
+      _errorMessage = ErrorMessageHelper.toUserFriendly(e);
     } finally {
       _isLoading = false;
       notifyListeners();
@@ -541,7 +552,7 @@ class MeetingProvider extends ChangeNotifier {
     } catch (e, stackTrace) {
       print('[MeetingProvider] Error generating summary: $e');
       print('[MeetingProvider] Stack trace: $stackTrace');
-      _errorMessage = 'Failed to generate summary: $e';
+      _errorMessage = ErrorMessageHelper.toUserFriendly(e);
     } finally {
       _isGeneratingSummary = false;
       notifyListeners();
@@ -592,7 +603,7 @@ class MeetingProvider extends ChangeNotifier {
     } catch (e, stackTrace) {
       print('[MeetingProvider] Error generating insights: $e');
       print('[MeetingProvider] Stack trace: $stackTrace');
-      _errorMessage = 'Failed to generate insights: $e';
+      _errorMessage = ErrorMessageHelper.toUserFriendly(e);
     } finally {
       _isGeneratingInsights = false;
       notifyListeners();
@@ -649,7 +660,7 @@ class MeetingProvider extends ChangeNotifier {
     } catch (e, stackTrace) {
       print('[MeetingProvider] Error generating questions: $e');
       print('[MeetingProvider] Stack trace: $stackTrace');
-      _errorMessage = 'Failed to generate questions: $e';
+      _errorMessage = ErrorMessageHelper.toUserFriendly(e);
       _isGeneratingQuestions = false;
       notifyListeners();
       return '';

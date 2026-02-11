@@ -91,7 +91,7 @@ class VersionCheckService {
 
       final response = await HttpClientService.client
           .get(uri, headers: {'Content-Type': 'application/json'})
-          .timeout(const Duration(seconds: 10));
+          .timeout(const Duration(seconds: 5));
 
       if (response.statusCode != 200) {
         return null;

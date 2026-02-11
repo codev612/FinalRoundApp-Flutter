@@ -110,7 +110,7 @@ class BillingService {
 
   Future<BillingInfo> getMe() async {
     final uri = Uri.parse(_apiUrl('/api/billing/me'));
-    final response = await HttpClientService.client.get(uri, headers: _headers()).timeout(const Duration(seconds: 10));
+    final response = await HttpClientService.client.get(uri, headers: _headers()).timeout(const Duration(seconds: 5));
     if (response.statusCode < 200 || response.statusCode >= 300) {
       try {
         final data = jsonDecode(response.body);
@@ -135,7 +135,7 @@ class BillingService {
     }
     final response = await http
         .post(uri, headers: _headers(), body: jsonEncode(payload))
-        .timeout(const Duration(seconds: 10));
+        .timeout(const Duration(seconds: 5));
     if (response.statusCode < 200 || response.statusCode >= 300) {
       // Best-effort: do not throw hard errors in caller unless needed.
       try {

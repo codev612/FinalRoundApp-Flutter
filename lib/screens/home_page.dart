@@ -7,6 +7,7 @@ import '../providers/speech_to_text_provider.dart';
 import '../providers/dashboard_provider.dart';
 import '../widgets/dashboard_widgets.dart';
 import '../models/meeting_session.dart';
+import '../utils/error_message_helper.dart';
 
 class _HoverableListTile extends StatefulWidget {
   final MeetingSession session;
@@ -560,8 +561,10 @@ class _HomePageState extends State<HomePage> {
         if (authProvider.token != null && authProvider.token!.isNotEmpty) {
           // Reload all sessions (no pagination for homepage)
           meetingProvider.loadSessions();
-          // Refresh dashboard stats when sessions reload
-          dashboardProvider.refresh();
+          // Refresh dashboard stats when sessions reload (only if not already loading)
+          if (!dashboardProvider.isLoading) {
+            dashboardProvider.refresh();
+          }
         }
       });
     }
@@ -701,11 +704,68 @@ class _HomePageState extends State<HomePage> {
         final grouped = _groupSessionsByDate(sessions);
         final dateKeys = _getSortedDateKeys(grouped);
 
+        // Check if there's a server connection error
+        final hasServerError = provider.errorMessage.isNotEmpty &&
+            ErrorMessageHelper.isServerConnectionError(provider.errorMessage);
+
         return Padding(
           padding: const EdgeInsets.symmetric(horizontal: 64),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // Server connection error banner
+              if (hasServerError)
+                Container(
+                  margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.errorContainer,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: Theme.of(context).colorScheme.error.withValues(alpha: 0.3),
+                      width: 1,
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.cloud_off,
+                        color: Theme.of(context).colorScheme.error,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Server Connection Error',
+                              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                    color: Theme.of(context).colorScheme.onErrorContainer,
+                                  ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              provider.errorMessage,
+                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: Theme.of(context).colorScheme.onErrorContainer.withValues(alpha: 0.9),
+                                  ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, size: 18),
+                        color: Theme.of(context).colorScheme.onErrorContainer,
+                        onPressed: () {
+                          provider.clearError();
+                        },
+                        tooltip: 'Dismiss',
+                      ),
+                    ],
+                  ),
+                ),
               // Header with title and start button
               Padding(
                 padding: const EdgeInsets.all(16),

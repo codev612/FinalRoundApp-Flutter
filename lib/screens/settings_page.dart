@@ -14,6 +14,7 @@ import '../services/shortcuts_service.dart';
 import '../services/appearance_service.dart';
 import '../services/billing_service.dart';
 import '../providers/speech_to_text_provider.dart';
+import '../utils/error_message_helper.dart';
 import 'email_change_verification_dialog.dart';
 import 'manage_mode_page.dart';
 import 'manage_question_templates_page.dart';
@@ -1658,7 +1659,7 @@ class _PlanUsageSettingsState extends State<_PlanUsageSettings> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error opening billing page: $e')),
+          SnackBar(content: Text(ErrorMessageHelper.toUserFriendly(e))),
         );
       }
     }

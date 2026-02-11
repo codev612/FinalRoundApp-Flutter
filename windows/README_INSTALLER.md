@@ -111,6 +111,40 @@ sign_app.bat installer\FinalRoundSetup-1.0.0.exe certificate.pfx YourPassword
 
 ---
 
+## Chrome / Browser Says "Malicious" or "Dangerous"
+
+Browsers (Chrome, Edge, etc.) often warn on **unsigned** Windows installers because they have no way to verify the publisher. This is expected for an unsigned file.
+
+### Fix: Code sign the installer (required)
+
+1. **Sign both the app and the installer** before uploading to your server:
+   - Sign `finalround.exe` (see "Signing the Executable" above).
+   - Build the installer with Inno Setup.
+   - Sign the installer `.exe` (e.g. `FinalRoundSetup-1.0.0.exe`) with the same certificate.
+2. **Re-upload the signed installer** to your server so users download the signed build.
+3. **Use timestamping** (your `sign_app.bat` already uses `/t http://timestamp.digicert.com`) so the signature stays valid after the cert expires.
+
+Once the file is signed by a trusted certificate, Chrome and other browsers are much less likely to show "malicious" or "dangerous file" warnings.
+
+### If you don’t have a certificate yet
+
+- Get a **code signing certificate** from a trusted CA (DigiCert, Sectigo, GlobalSign, Certum, etc.). Cost is typically ~$200–500/year.
+- **EV (Extended Validation)** certs often get SmartScreen reputation faster and can reduce browser warnings sooner.
+
+### After signing: build reputation
+
+- **Microsoft SmartScreen**: Submit the signed installer at [Microsoft Security Intelligence](https://www.microsoft.com/en-us/wdsi/filesubmission). Choose "Developer submission" and indicate it’s your legitimate app. This helps reduce "Unknown publisher" and Windows warnings.
+- **Google Safe Browsing**: If Chrome still flags the download, you can [report a false positive](https://safebrowsing.google.com/safebrowsing/report_error/) and request review.
+- **VirusTotal**: Upload the signed installer. If any engine flags it, use each vendor’s link to submit a false positive. This can help other AVs and browsers.
+
+### Server / download tips
+
+- Serve the installer over **HTTPS** (you likely already do).
+- Use a clear, consistent **filename** (e.g. `FinalRoundSetup-1.0.0.exe`).
+- Optional: set `Content-Disposition: attachment` so the browser offers "Save" instead of "Run" and the filename is preserved.
+
+---
+
 ## Reducing False Positives
 
 Even with code signing, you may still need to:
