@@ -15,6 +15,7 @@ import '../providers/meeting_provider.dart';
 import '../providers/speech_to_text_provider.dart';
 import '../providers/notification_provider.dart';
 import '../providers/dashboard_provider.dart';
+import '../services/appearance_service.dart';
 
 class AppShell extends StatefulWidget {
   const AppShell({super.key});
@@ -153,73 +154,161 @@ class _AppShellState extends State<AppShell> with WindowListener {
             },
             child: Focus(
               autofocus: true,
-              child: Scaffold(
-            backgroundColor: Colors.transparent,
-            body: SafeArea(
-              child: IndexedStack(
-                index: displayIndex,
-                children: [
-                  // Home page with opaque background
-                  Container(
-                    color: Theme.of(context).colorScheme.surface,
-                    child: HomePage(
-                      onStartMeeting: () async {
-                        // Clear current session and create a new one when starting a new meeting
-                        final meetingProvider = context.read<MeetingProvider>();
-                        final speechProvider = context.read<SpeechToTextProvider>();
-                        await meetingProvider.clearCurrentSession();
-                        // Clear speech provider bubbles to start fresh
-                        speechProvider.clearTranscript();
-                        await meetingProvider.createNewSession();
-                        setState(() => _index = 1);
-                      },
-                      onLoadSession: () {
-                        // Just navigate to meeting page when loading an existing session
-                        // The session is already loaded by loadSession() call
-                        setState(() => _index = 1);
-                      },
-                    ),
+              child: _ScaffoldWithConditionalBackground(
+                displayIndex: displayIndex,
+                onIndexChanged: (i) async {
+                  // If clicking Home tab (index 0), reload sessions to show newly saved ones
+                  if (i == 0 && displayIndex != 0) {
+                    final meetingProvider = context.read<MeetingProvider>();
+                    // Reload all sessions (no pagination for homepage)
+                    meetingProvider.loadSessions();
+                  }
+                  // If clicking Meeting tab (index 1) and no current session, start a new meeting
+                  if (i == 1) {
+                    final meetingProvider = context.read<MeetingProvider>();
+                    if (meetingProvider.currentSession == null) {
+                      // Start a new meeting like the "Start Meeting" button
+                      final speechProvider = context.read<SpeechToTextProvider>();
+                      await meetingProvider.clearCurrentSession();
+                      speechProvider.clearTranscript();
+                      await meetingProvider.createNewSession();
+                    }
+                  }
+                  setState(() => _index = i);
+                },
+                child: SafeArea(
+                  child: IndexedStack(
+                    index: displayIndex,
+                    children: [
+                      // Home page with opaque background
+                      Container(
+                        color: Theme.of(context).colorScheme.surface,
+                        child: HomePage(
+                          onStartMeeting: () async {
+                            // Clear current session and create a new one when starting a new meeting
+                            final meetingProvider = context.read<MeetingProvider>();
+                            final speechProvider = context.read<SpeechToTextProvider>();
+                            await meetingProvider.clearCurrentSession();
+                            // Clear speech provider bubbles to start fresh
+                            speechProvider.clearTranscript();
+                            await meetingProvider.createNewSession();
+                            setState(() => _index = 1);
+                          },
+                          onLoadSession: () {
+                            // Just navigate to meeting page when loading an existing session
+                            // The session is already loaded by loadSession() call
+                            setState(() => _index = 1);
+                          },
+                        ),
+                      ),
+                      // Meeting page - transparent or opaque based on setting
+                      const MeetingPageEnhanced(),
+                      // Notifications page (uses same background as surface)
+                      NotificationsPage(isActive: displayIndex == 2),
+                      // Settings page with opaque background
+                      Container(
+                        color: Theme.of(context).colorScheme.surface,
+                        child: const SettingsPage(),
+                      ),
+                    ],
                   ),
-                  // Meeting page remains transparent
-                  const MeetingPageEnhanced(),
-                  // Notifications page (uses same background as surface)
-                  NotificationsPage(isActive: displayIndex == 2),
-                  // Settings page with opaque background
-                  Container(
-                    color: Theme.of(context).colorScheme.surface,
-                    child: const SettingsPage(),
-                  ),
-                ],
+                ),
               ),
             ),
+          ),
+        );
+      },
+    );
+      },
+    );
+  }
+}
+
+class _ToggleHideIntent extends Intent {
+  const _ToggleHideIntent();
+}
+
+class _ScaffoldWithConditionalBackground extends StatefulWidget {
+  final int displayIndex;
+  final ValueChanged<int> onIndexChanged;
+  final Widget child;
+
+  const _ScaffoldWithConditionalBackground({
+    required this.displayIndex,
+    required this.onIndexChanged,
+    required this.child,
+  });
+
+  @override
+  State<_ScaffoldWithConditionalBackground> createState() => _ScaffoldWithConditionalBackgroundState();
+}
+
+class _ScaffoldWithConditionalBackgroundState extends State<_ScaffoldWithConditionalBackground> {
+  bool? _isMeetingPageTransparent;
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSetting();
+  }
+
+  Future<void> _loadSetting() async {
+    final isTransparent = await AppearanceService.getMeetingPageTransparent();
+    if (mounted) {
+      setState(() {
+        _isMeetingPageTransparent = isTransparent;
+        _isLoading = false;
+      });
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Reload setting when dependencies change to pick up setting changes
+    if (!_isLoading) {
+      _loadSetting();
+    }
+  }
+
+  @override
+  void didUpdateWidget(_ScaffoldWithConditionalBackground oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Reload setting when displayIndex changes to meeting page (index 1)
+    if (oldWidget.displayIndex != widget.displayIndex && widget.displayIndex == 1) {
+      _loadSetting();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Determine Scaffold background color
+    Color scaffoldBackgroundColor;
+    
+    if (widget.displayIndex == 1) {
+      // Meeting page - check transparency setting
+      final isTransparent = _isMeetingPageTransparent ?? true; // Default to transparent
+      scaffoldBackgroundColor = isTransparent 
+          ? Colors.transparent 
+          : Theme.of(context).colorScheme.surface;
+    } else {
+      // Other pages - always transparent (they have their own Container backgrounds)
+      scaffoldBackgroundColor = Colors.transparent;
+    }
+
+    return Scaffold(
+      backgroundColor: scaffoldBackgroundColor,
+      body: widget.child,
       bottomNavigationBar: Consumer2<SpeechToTextProvider, NotificationProvider>(
         builder: (context, speechProvider, notificationProvider, child) {
           final isRecording = speechProvider.isRecording;
-          final showAlert = isRecording && displayIndex != 1; // Show alert when recording and not on meeting page
+          final showAlert = isRecording && widget.displayIndex != 1; // Show alert when recording and not on meeting page
           final hasUnreadNotifications = notificationProvider.hasUnread;
           
           return BottomNavigationBar(
-            currentIndex: displayIndex,
-            onTap: (i) async {
-              // If clicking Home tab (index 0), reload sessions to show newly saved ones
-              if (i == 0 && displayIndex != 0) {
-                final meetingProvider = context.read<MeetingProvider>();
-                // Reload all sessions (no pagination for homepage)
-                meetingProvider.loadSessions();
-              }
-              // If clicking Meeting tab (index 1) and no current session, start a new meeting
-              if (i == 1) {
-                final meetingProvider = context.read<MeetingProvider>();
-                if (meetingProvider.currentSession == null) {
-                  // Start a new meeting like the "Start Meeting" button
-                  final speechProvider = context.read<SpeechToTextProvider>();
-                  await meetingProvider.clearCurrentSession();
-                  speechProvider.clearTranscript();
-                  await meetingProvider.createNewSession();
-                }
-              }
-              setState(() => _index = i);
-            },
+            currentIndex: widget.displayIndex,
+            onTap: widget.onIndexChanged,
             backgroundColor: Theme.of(context).colorScheme.surface,
             selectedItemColor: Theme.of(context).colorScheme.primary,
             unselectedItemColor: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
@@ -337,17 +426,6 @@ class _AppShellState extends State<AppShell> with WindowListener {
           );
         },
       ),
-            ),
-          ),
-        ),
-      );
-        },
-      );
-      },
     );
   }
-}
-
-class _ToggleHideIntent extends Intent {
-  const _ToggleHideIntent();
 }

@@ -7,6 +7,7 @@ class AppearanceService {
   static const String _keyUndetectable = 'appearance_undetectable';
   static const String _keySkipTaskbar = 'appearance_skip_taskbar';
   static const String _keyThemeMode = 'theme_mode';
+  static const String _keyMeetingPageTransparent = 'appearance_meeting_page_transparent';
   static const MethodChannel _channel = MethodChannel('com.finalround/window');
 
   /// Load undetectable setting
@@ -58,6 +59,18 @@ class AppearanceService {
     } catch (e) {
       print('Error setting title bar theme: $e');
     }
+  }
+
+  /// Load meeting page transparency setting
+  static Future<bool> getMeetingPageTransparent() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_keyMeetingPageTransparent) ?? true; // Default to true (transparent)
+  }
+
+  /// Save meeting page transparency setting
+  static Future<void> setMeetingPageTransparent(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyMeetingPageTransparent, value);
   }
 
   /// Apply all appearance settings on app start

@@ -1299,6 +1299,7 @@ class _AppearanceSettings extends StatefulWidget {
 class _AppearanceSettingsState extends State<_AppearanceSettings> {
   bool _undetectable = false;
   bool _skipTaskbar = true;
+  bool _meetingPageTransparent = true;
   bool _isLoading = false;
 
   @override
@@ -1311,9 +1312,11 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
     setState(() => _isLoading = true);
     final undetectable = await AppearanceService.getUndetectable();
     final skipTaskbar = await AppearanceService.getSkipTaskbar();
+    final meetingPageTransparent = await AppearanceService.getMeetingPageTransparent();
     setState(() {
       _undetectable = undetectable;
       _skipTaskbar = skipTaskbar;
+      _meetingPageTransparent = meetingPageTransparent;
       _isLoading = false;
     });
   }
@@ -1341,6 +1344,20 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
           content: Text(value 
             ? 'Taskbar icon hidden'
             : 'Taskbar icon shown'),
+        ),
+      );
+    }
+  }
+
+  Future<void> _onMeetingPageTransparentChanged(bool value) async {
+    setState(() => _meetingPageTransparent = value);
+    await AppearanceService.setMeetingPageTransparent(value);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(value 
+            ? 'Meeting page background is now transparent'
+            : 'Meeting page background is now opaque'),
         ),
       );
     }
@@ -1385,6 +1402,18 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
               value: _skipTaskbar,
               onChanged: _onSkipTaskbarChanged,
               secondary: const Icon(Icons.task_alt),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Card(
+            child: SwitchListTile(
+              title: const Text('Transparent Meeting Page Background'),
+              subtitle: const Text(
+                'Make the meeting page background transparent or opaque',
+              ),
+              value: _meetingPageTransparent,
+              onChanged: _onMeetingPageTransparentChanged,
+              secondary: const Icon(Icons.auto_awesome),
             ),
           ),
           const SizedBox(height: 16),
