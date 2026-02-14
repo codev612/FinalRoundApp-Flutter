@@ -157,11 +157,13 @@ class _AppShellState extends State<AppShell> with WindowListener {
               child: _ScaffoldWithConditionalBackground(
                 displayIndex: displayIndex,
                 onIndexChanged: (i) async {
-                  // If clicking Home tab (index 0), reload sessions to show newly saved ones
+                  // If clicking Home tab (index 0), reload sessions and dashboard stats
                   if (i == 0 && displayIndex != 0) {
                     final meetingProvider = context.read<MeetingProvider>();
-                    // Reload all sessions (no pagination for homepage)
-                    meetingProvider.loadSessions();
+                    final dashboardProvider = context.read<DashboardProvider>();
+                    await meetingProvider.loadSessions();
+                    if (!mounted) return;
+                    await dashboardProvider.refresh();
                   }
                   // If clicking Meeting tab (index 1) and no current session, start a new meeting
                   if (i == 1) {

@@ -532,16 +532,16 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       final authProvider = context.read<AuthProvider>();
       final meetingProvider = context.read<MeetingProvider>();
       final dashboardProvider = context.read<DashboardProvider>();
       // Ensure auth token is set before loading sessions
       meetingProvider.updateAuthToken(authProvider.token);
       dashboardProvider.setAuthToken(authProvider.token);
-      meetingProvider.loadSessions(); // Load all sessions (no pagination for homepage)
-      // Load dashboard stats (will refresh when sessions finish loading)
-      dashboardProvider.loadStats();
+      await meetingProvider.loadSessions(); // Load all sessions (no pagination for homepage)
+      if (!mounted) return;
+      await dashboardProvider.loadStats(); // Must run after sessions are loaded for total meeting time
     });
   }
 
@@ -552,18 +552,17 @@ class _HomePageState extends State<HomePage> {
     // This ensures newly saved sessions appear immediately
     // Use a flag to prevent multiple reloads
     if (mounted) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
         if (!mounted) return;
         final meetingProvider = context.read<MeetingProvider>();
         final dashboardProvider = context.read<DashboardProvider>();
         // Only reload if we have an auth token (user is logged in)
         final authProvider = context.read<AuthProvider>();
         if (authProvider.token != null && authProvider.token!.isNotEmpty) {
-          // Reload all sessions (no pagination for homepage)
-          meetingProvider.loadSessions();
-          // Refresh dashboard stats when sessions reload (only if not already loading)
+          await meetingProvider.loadSessions();
+          if (!mounted) return;
           if (!dashboardProvider.isLoading) {
-            dashboardProvider.refresh();
+            await dashboardProvider.refresh();
           }
         }
       });

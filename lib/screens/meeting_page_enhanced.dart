@@ -151,6 +151,8 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
   BillingInfo? _billingInfo;
   String? _billingError;
   int? _recordingRunStartRemainingMs;
+  static const _inactivityAutoStopMinutes = 5;
+  bool _inactivityStopTriggered = false;
   bool _limitStopTriggered = false;
   String _lastAiErrorShown = '';
 
@@ -562,6 +564,18 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
             await _stopRecordingDueToLimit();
           });
         }
+        // Auto-stop if no transcription detected for 5 minutes
+        final lastActivity = speechProvider.lastTranscriptOrRecordingStartTime;
+        if (lastActivity != null &&
+            !_inactivityStopTriggered &&
+            !speechProvider.isStopping &&
+            DateTime.now().difference(lastActivity) >= const Duration(minutes: _inactivityAutoStopMinutes)) {
+          _inactivityStopTriggered = true;
+          Future.microtask(() async {
+            if (!mounted) return;
+            await _stopRecordingDueToInactivity();
+          });
+        }
         setState(() {});
       });
     } else {
@@ -573,12 +587,21 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     }
   }
 
+  int _effectiveRemainingMinutes(BillingInfo info) {
+    // Use server's remainingMinutes; fallback to limit - used if inconsistent
+    var rem = info.remainingMinutes;
+    if (rem < 0 || rem > info.limitMinutes) {
+      rem = (info.limitMinutes - info.usedMinutes).clamp(0, info.limitMinutes);
+    }
+    return rem;
+  }
+
   int? _currentRemainingBillingMs(SpeechToTextProvider? speechProvider) {
     final info = _billingInfo;
     if (info == null) return null;
 
     // Base remaining (minutes granularity from server)
-    final baseRemainingMs = info.remainingMinutes * 60 * 1000;
+    final baseRemainingMs = _effectiveRemainingMinutes(info) * 60 * 1000;
 
     if (speechProvider == null || !speechProvider.isRecording) return baseRemainingMs;
     final startRemainingMs = _recordingRunStartRemainingMs;
@@ -601,6 +624,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
   Future<void> _recordUsageForCurrentRunAndRefresh() async {
     _recordingRunStartRemainingMs = null;
     _limitStopTriggered = false;
+    _inactivityStopTriggered = false;
 
     final usedMs = _speechProvider?.transcriptionUsageMsThisRun ?? 0;
     if (usedMs <= 0) return;
@@ -615,6 +639,23 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     try {
       await _refreshBilling();
     } catch (_) {}
+  }
+
+  Future<void> _stopRecordingDueToInactivity() async {
+    await _recordUsageForCurrentRunAndRefresh();
+
+    final speechProvider = _speechProvider;
+    if (speechProvider == null) return;
+    if (!speechProvider.isRecording || speechProvider.isStopping) return;
+
+    try {
+      speechProvider.stopRecording().catchError((_) {});
+    } catch (_) {}
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('No transcription detected for $_inactivityAutoStopMinutes minutes. Recording stopped.')),
+    );
   }
 
   Future<void> _stopRecordingDueToLimit() async {
@@ -2072,7 +2113,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                                     if (_billingInfo == null) {
                                       await _refreshBilling();
                                     }
-                                    final remaining = _billingInfo?.remainingMinutes;
+                                    final remaining = _billingInfo != null ? _effectiveRemainingMinutes(_billingInfo!) : null;
                                     if (remaining != null && remaining <= 0) {
                                       if (!mounted) return;
                                       ScaffoldMessenger.of(context).showSnackBar(
@@ -2082,8 +2123,9 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                                     }
                                   } catch (_) {}
 
-                                  _recordingRunStartRemainingMs = (_billingInfo?.remainingMinutes ?? 0) * 60 * 1000;
+                                  _recordingRunStartRemainingMs = (_billingInfo != null ? _effectiveRemainingMinutes(_billingInfo!) : 0) * 60 * 1000;
                                   _limitStopTriggered = false;
+                                  _inactivityStopTriggered = false;
                                   speechProvider.startRecording(clearExisting: shouldClear, useMic: speechProvider.useMic);
                                 },
                                 tooltip: (isSavedSession || hasExistingBubbles) ? 'Resume (Ctrl+R)' : 'Start (Ctrl+R)',
@@ -2706,7 +2748,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                       if (_billingInfo == null) {
                         await _refreshBilling();
                       }
-                      final remaining = _billingInfo?.remainingMinutes;
+                      final remaining = _billingInfo != null ? _effectiveRemainingMinutes(_billingInfo!) : null;
                       if (remaining != null && remaining <= 0) {
                         if (!mounted) return null;
                         ScaffoldMessenger.of(context).showSnackBar(
@@ -2716,8 +2758,9 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                       }
                     } catch (_) {}
 
-                    _recordingRunStartRemainingMs = (_billingInfo?.remainingMinutes ?? 0) * 60 * 1000;
+                    _recordingRunStartRemainingMs = (_billingInfo != null ? _effectiveRemainingMinutes(_billingInfo!) : 0) * 60 * 1000;
                     _limitStopTriggered = false;
+                    _inactivityStopTriggered = false;
                     speechProvider.startRecording(clearExisting: shouldClear, useMic: speechProvider.useMic);
                   }
                   return null;
@@ -2796,7 +2839,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                                               ),
                                             ),
                                             child: Text(
-                                              '${_formatRemainingMs(_currentRemainingBillingMs(speechProvider) ?? (_billingInfo!.remainingMinutes * 60 * 1000))} left',
+                                              '${_formatRemainingMs(_currentRemainingBillingMs(speechProvider) ?? (_effectiveRemainingMinutes(_billingInfo!) * 60 * 1000))} left',
                                               style: Theme.of(context).textTheme.labelMedium?.copyWith(
                                                     fontWeight: FontWeight.w600,
                                                     color: Theme.of(context).colorScheme.onSurface,

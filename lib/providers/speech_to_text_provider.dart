@@ -107,6 +107,10 @@ class SpeechToTextProvider extends ChangeNotifier {
   bool get isStopping => _isStopping;
   bool get useMic => _useMic;
   int get transcriptionUsageMsThisRun => _transcriptionUsageMsThisRun;
+
+  /// Last time a transcript was received, or recording start if none yet. Used for inactivity auto-stop.
+  DateTime? get lastTranscriptOrRecordingStartTime => _lastTranscriptUsageAt ?? _recordingStartTime;
+
   void _trackTranscriptionUsageEvent() {
     if (!_isRecording || _isStopping || _isDisposed) return;
     final now = DateTime.now();

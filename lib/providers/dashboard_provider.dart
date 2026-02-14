@@ -81,12 +81,8 @@ class DashboardProvider extends ChangeNotifier {
         },
       );
 
-      // Calculate total meeting time from all sessions
-      final sessions = _meetingProvider.sessions;
-      int totalMinutes = 0;
-      for (final session in sessions) {
-        totalMinutes += session.duration.inMinutes;
-      }
+      // Total meeting time = Deepgram/transcription API usage (billing usedMinutes)
+      final totalMinutes = billingInfo.usedMinutes;
 
       // Calculate API usage percentage
       final apiUsagePercentage = billingInfo.aiLimitTokens > 0
