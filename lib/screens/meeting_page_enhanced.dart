@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io' show Platform;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -32,6 +33,7 @@ class MeetingPageEnhanced extends StatefulWidget {
 enum ScreenCaptureTarget {
   window,
   screen,
+  region,
 }
 
 class _ShareableWindowInfo {
@@ -95,14 +97,62 @@ class _MonitorInfo {
   }
 }
 
+class _PendingRegionSelection {
+  final _MonitorInfo monitor;
+  const _PendingRegionSelection(this.monitor);
+}
+
+class _RegionBounds {
+  final int x;
+  final int y;
+  final int width;
+  final int height;
+  final int monitorId;
+  final String monitorLabel;
+
+  const _RegionBounds({
+    required this.x,
+    required this.y,
+    required this.width,
+    required this.height,
+    required this.monitorId,
+    required this.monitorLabel,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'x': x,
+    'y': y,
+    'width': width,
+    'height': height,
+    'monitorId': monitorId,
+    'monitorLabel': monitorLabel,
+  };
+
+  static _RegionBounds? fromJson(Map<String, dynamic>? json) {
+    if (json == null) return null;
+    final x = (json['x'] as num?)?.toInt();
+    final y = (json['y'] as num?)?.toInt();
+    final w = (json['width'] as num?)?.toInt();
+    final h = (json['height'] as num?)?.toInt();
+    final monitorId = (json['monitorId'] as num?)?.toInt();
+    final monitorLabel = json['monitorLabel']?.toString();
+    if (x == null || y == null || w == null || h == null || w <= 0 || h <= 0 || monitorId == null || monitorLabel == null) return null;
+    return _RegionBounds(x: x, y: y, width: w, height: h, monitorId: monitorId, monitorLabel: monitorLabel);
+  }
+
+  String get displayLabel => '${width}×$height region on $monitorLabel';
+}
+
 class _ScreenCaptureChoice {
   final ScreenCaptureTarget target;
   final _ShareableWindowInfo? window;
   final int? monitorId;
   final String? monitorLabel;
-  const _ScreenCaptureChoice._(this.target, this.window, this.monitorId, this.monitorLabel);
+  final _RegionBounds? region;
+  const _ScreenCaptureChoice._(this.target, this.window, this.monitorId, this.monitorLabel, [this.region]);
   _ScreenCaptureChoice.screenMonitor(_MonitorInfo m) : this._(ScreenCaptureTarget.screen, null, m.id, m.label);
   const _ScreenCaptureChoice.window(_ShareableWindowInfo w) : this._(ScreenCaptureTarget.window, w, null, null);
+  _ScreenCaptureChoice.regionCapture(_RegionBounds r) : this._(ScreenCaptureTarget.region, null, r.monitorId, r.monitorLabel, r);
 }
 
 class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
@@ -130,6 +180,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
   String? _screenCaptureWindowTitle;
   int? _screenCaptureMonitorId; // null = all screens
   String? _screenCaptureMonitorLabel;
+  _RegionBounds? _screenCaptureRegion;
   bool _showConversationControls = true;
   bool _showAiControls = true;
   bool _showConversationPanel = true;
@@ -145,6 +196,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
   static const String _screenCaptureTargetPrefKey = 'screen_capture_target';
   static const String _screenCaptureMonitorIdPrefKey = 'screen_capture_monitor_id';
   static const String _screenCaptureMonitorLabelPrefKey = 'screen_capture_monitor_label';
+  static const String _screenCaptureRegionPrefKey = 'screen_capture_region';
   String _selectedAiModel = 'gpt-4.1-mini';
 
   BillingService? _billingService;
@@ -176,6 +228,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
       await _loadAutoAskUseScreen();
       await _loadScreenCaptureTarget();
       await _loadScreenCaptureMonitorSelection();
+      await _loadScreenCaptureRegion();
       
       final authToken = authProvider.token;
       _billingService = BillingService()..setAuthToken(authToken);
@@ -309,11 +362,48 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
       final saved = prefs.getString(_screenCaptureTargetPrefKey);
       ScreenCaptureTarget next = ScreenCaptureTarget.window;
       if (saved == 'screen') next = ScreenCaptureTarget.screen;
+      if (saved == 'region') next = ScreenCaptureTarget.region;
       if (!mounted) {
         _screenCaptureTarget = next;
         return;
       }
       setState(() => _screenCaptureTarget = next);
+    } catch (_) {
+      // Ignore preference failures.
+    }
+  }
+
+  Future<void> _loadScreenCaptureRegion() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getString(_screenCaptureRegionPrefKey);
+      if (saved == null || saved.isEmpty) return;
+      final json = jsonDecode(saved) as Map<String, dynamic>?;
+      final region = _RegionBounds.fromJson(json);
+      if (region == null) return;
+      if (!mounted) {
+        _screenCaptureRegion = region;
+        return;
+      }
+      setState(() => _screenCaptureRegion = region);
+    } catch (_) {
+      // Ignore preference failures.
+    }
+  }
+
+  Future<void> _setScreenCaptureRegion(_RegionBounds? region) async {
+    if (!mounted) {
+      _screenCaptureRegion = region;
+    } else {
+      setState(() => _screenCaptureRegion = region);
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (region == null) {
+        await prefs.remove(_screenCaptureRegionPrefKey);
+      } else {
+        await prefs.setString(_screenCaptureRegionPrefKey, jsonEncode(region.toJson()));
+      }
     } catch (_) {
       // Ignore preference failures.
     }
@@ -330,9 +420,15 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
       _screenCaptureWindowHwnd = null;
       _screenCaptureWindowTitle = null;
     }
+    if (target != ScreenCaptureTarget.region) {
+      _screenCaptureRegion = null;
+    }
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_screenCaptureTargetPrefKey, target == ScreenCaptureTarget.screen ? 'screen' : 'window');
+      String value = 'window';
+      if (target == ScreenCaptureTarget.screen) value = 'screen';
+      if (target == ScreenCaptureTarget.region) value = 'region';
+      await prefs.setString(_screenCaptureTargetPrefKey, value);
     } catch (_) {
       // Ignore preference failures.
     }
@@ -392,7 +488,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
 
   Future<void> _showScreenCapturePicker() async {
     if (!Platform.isWindows) return;
-    final choice = await showDialog<_ScreenCaptureChoice>(
+    final result = await showDialog<dynamic>(
       context: context,
       barrierDismissible: true,
       builder: (context) {
@@ -400,12 +496,32 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
           initialTarget: _screenCaptureTarget,
           initialWindowHwnd: _screenCaptureWindowHwnd,
           initialMonitorId: _screenCaptureMonitorId,
+          initialRegion: _screenCaptureRegion,
           loadMonitors: _listMonitors,
           loadWindows: _listShareableWindows,
         );
       },
     );
-    if (!mounted || choice == null) return;
+    if (!mounted || result == null) return;
+
+    // Handle pending region selection (user clicked "Select Screen Region")
+    if (result is _PendingRegionSelection) {
+      final region = await _launchRegionSelector(result.monitor);
+      if (!mounted || region == null) return;
+      await _setScreenCaptureTarget(ScreenCaptureTarget.region);
+      await _setScreenCaptureRegion(region);
+      return;
+    }
+
+    final choice = result as _ScreenCaptureChoice;
+
+    if (choice.target == ScreenCaptureTarget.region) {
+      final region = choice.region;
+      if (region == null) return;
+      await _setScreenCaptureTarget(ScreenCaptureTarget.region);
+      await _setScreenCaptureRegion(region);
+      return;
+    }
 
     if (choice.target == ScreenCaptureTarget.screen) {
       await _setScreenCaptureTarget(ScreenCaptureTarget.screen);
@@ -423,6 +539,63 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
       _screenCaptureWindowHwnd = w.hwnd;
       _screenCaptureWindowTitle = w.title;
     });
+  }
+
+  Future<_RegionBounds?> _launchRegionSelector(_MonitorInfo monitor) async {
+    if (!mounted) return null;
+    
+    // Get virtual screen bounds
+    final screenBounds = await _windowChannel.invokeMethod<dynamic>('getVirtualScreenBounds');
+    if (screenBounds is! Map) {
+      return null;
+    }
+    
+    final screenX = (screenBounds['x'] as num?)?.toInt() ?? 0;
+    final screenY = (screenBounds['y'] as num?)?.toInt() ?? 0;
+    final screenWidth = (screenBounds['width'] as num?)?.toInt() ?? 0;
+    final screenHeight = (screenBounds['height'] as num?)?.toInt() ?? 0;
+    
+    if (screenWidth <= 0 || screenHeight <= 0) return null;
+    
+    // Capture screenshot of entire virtual screen for selection preview
+    final screenshotPixels = await _windowChannel.invokeMethod<dynamic>(
+      'captureRectPixels',
+      <String, dynamic>{
+        'x': screenX,
+        'y': screenY,
+        'width': screenWidth,
+        'height': screenHeight,
+      },
+    );
+    
+    if (screenshotPixels is! Map) return null;
+    
+    final imgWidth = (screenshotPixels['width'] as num?)?.toInt() ?? 0;
+    final imgHeight = (screenshotPixels['height'] as num?)?.toInt() ?? 0;
+    final imgBytes = screenshotPixels['bytes'];
+    
+    if (imgWidth <= 0 || imgHeight <= 0 || imgBytes is! Uint8List) return null;
+    
+    // Decode the screenshot
+    final screenshot = await _decodeBgraToImage(imgBytes, imgWidth, imgHeight);
+    
+    // Show region selector dialog with the screenshot
+    final region = await showDialog<_RegionBounds>(
+      context: context,
+      barrierDismissible: true,
+      barrierColor: Colors.black87,
+      builder: (context) => _RegionSelectorDialog(
+        monitor: monitor,
+        screenshot: screenshot,
+        screenOffsetX: screenX,
+        screenOffsetY: screenY,
+        screenWidth: screenWidth,
+        screenHeight: screenHeight,
+      ),
+    );
+    
+    screenshot.dispose();
+    return region;
   }
 
   Future<void> _loadAutoAskUseScreen() async {
@@ -1397,9 +1570,22 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
   Widget _buildCaptureTargetPickerPill() {
     if (!Platform.isWindows) return const SizedBox.shrink();
 
-    final pillLabel = _screenCaptureTarget == ScreenCaptureTarget.screen
-        ? (_screenCaptureMonitorLabel?.isNotEmpty == true ? _screenCaptureMonitorLabel! : 'Choose screen…')
-        : (_screenCaptureWindowTitle?.isNotEmpty == true ? _screenCaptureWindowTitle! : 'Choose window…');
+    String pillLabel;
+    IconData pillIcon;
+    switch (_screenCaptureTarget) {
+      case ScreenCaptureTarget.screen:
+        pillLabel = _screenCaptureMonitorLabel?.isNotEmpty == true ? _screenCaptureMonitorLabel! : 'Choose screen…';
+        pillIcon = Icons.desktop_windows;
+        break;
+      case ScreenCaptureTarget.region:
+        pillLabel = _screenCaptureRegion?.displayLabel ?? 'Choose region…';
+        pillIcon = Icons.crop;
+        break;
+      case ScreenCaptureTarget.window:
+        pillLabel = _screenCaptureWindowTitle?.isNotEmpty == true ? _screenCaptureWindowTitle! : 'Choose window…';
+        pillIcon = Icons.crop_free;
+        break;
+    }
 
     // On desktop, InkWell hover/highlight paints on the nearest Material. If that Material
     // is the whole conversation header, hover can visually overlap the "Ready" label.
@@ -1428,7 +1614,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                 mainAxisSize: MainAxisSize.max,
                 children: [
                   Icon(
-                    _screenCaptureTarget == ScreenCaptureTarget.screen ? Icons.desktop_windows : Icons.crop_free,
+                    pillIcon,
                     size: 16,
                     color: Colors.white,
                   ),
@@ -1459,7 +1645,19 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
   Future<Uint8List?> _tryCaptureSelectedTargetPngBytes() async {
     try {
       dynamic pixels;
-      if (_screenCaptureTarget == ScreenCaptureTarget.screen) {
+      if (_screenCaptureTarget == ScreenCaptureTarget.region) {
+        final region = _screenCaptureRegion;
+        if (region == null) return null;
+        pixels = await _windowChannel.invokeMethod<dynamic>(
+          'captureRectPixels',
+          <String, dynamic>{
+            'x': region.x,
+            'y': region.y,
+            'width': region.width,
+            'height': region.height,
+          },
+        );
+      } else if (_screenCaptureTarget == ScreenCaptureTarget.screen) {
         var monitorId = _screenCaptureMonitorId;
         if (monitorId == null) {
           final monitors = await _listMonitors();
@@ -3310,6 +3508,7 @@ class _ScreenCapturePickerDialog extends StatefulWidget {
   final ScreenCaptureTarget initialTarget;
   final int? initialWindowHwnd;
   final int? initialMonitorId; // null = all screens
+  final _RegionBounds? initialRegion;
   final Future<List<_MonitorInfo>> Function() loadMonitors;
   final Future<List<_ShareableWindowInfo>> Function() loadWindows;
 
@@ -3317,6 +3516,7 @@ class _ScreenCapturePickerDialog extends StatefulWidget {
     required this.initialTarget,
     required this.initialWindowHwnd,
     required this.initialMonitorId,
+    required this.initialRegion,
     required this.loadMonitors,
     required this.loadWindows,
   });
@@ -3330,6 +3530,7 @@ class _ScreenCapturePickerDialogState extends State<_ScreenCapturePickerDialog> 
   int? _selectedHwnd;
   int? _selectedMonitorId; // null = all screens
   String? _selectedMonitorLabel;
+  _RegionBounds? _selectedRegion;
   Future<Map<String, dynamic>>? _dataFuture;
   final Map<String, ui.Image> _previews = {};
   final Set<String> _previewLoading = {};
@@ -3340,6 +3541,7 @@ class _ScreenCapturePickerDialogState extends State<_ScreenCapturePickerDialog> 
     _target = widget.initialTarget;
     _selectedHwnd = widget.initialWindowHwnd;
     _selectedMonitorId = widget.initialMonitorId;
+    _selectedRegion = widget.initialRegion;
     _dataFuture = _loadAll();
   }
 
@@ -3569,6 +3771,86 @@ class _ScreenCapturePickerDialogState extends State<_ScreenCapturePickerDialog> 
     );
   }
 
+  Widget _buildRegionSection(List<_MonitorInfo> monitors) {
+    final cs = Theme.of(context).colorScheme;
+    final hasRegion = _selectedRegion != null;
+    final isSelected = _target == ScreenCaptureTarget.region && hasRegion;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (hasRegion)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: InkWell(
+              onTap: () {
+                setState(() {
+                  _target = ScreenCaptureTarget.region;
+                  _selectedHwnd = null;
+                });
+              },
+              borderRadius: BorderRadius.circular(10),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: isSelected ? cs.primary : cs.outline.withValues(alpha: 0.3),
+                    width: isSelected ? 2 : 1,
+                  ),
+                  color: isSelected ? cs.primary.withValues(alpha: 0.08) : null,
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.crop, color: cs.onSurface, size: 20),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _selectedRegion!.displayLabel,
+                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                          ),
+                          Text(
+                            'Position: (${_selectedRegion!.x}, ${_selectedRegion!.y})',
+                            style: Theme.of(context).textTheme.labelSmall?.copyWith(color: cs.onSurface.withValues(alpha: 0.65)),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (isSelected)
+                      Icon(Icons.check, color: cs.primary, size: 18),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        OutlinedButton.icon(
+          onPressed: monitors.isEmpty ? null : () async {
+            final monitor = monitors.length == 1
+                ? monitors.first
+                : monitors.firstWhere((m) => m.isPrimary, orElse: () => monitors.first);
+            // Close the dialog and pass a special marker to indicate region selection needed
+            Navigator.pop(context, _PendingRegionSelection(monitor));
+          },
+          icon: const Icon(Icons.crop),
+          label: Text(hasRegion ? 'Select New Region' : 'Select Screen Region'),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Text(
+            'Selection overlay is hidden from screen sharing',
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: cs.onSurface.withValues(alpha: 0.5),
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
@@ -3649,6 +3931,19 @@ class _ScreenCapturePickerDialogState extends State<_ScreenCapturePickerDialog> 
                   child: Padding(
                     padding: const EdgeInsets.only(bottom: 8),
                     child: Text(
+                      'Screen Region',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ),
+                SliverToBoxAdapter(
+                  child: _buildRegionSection(monitors),
+                ),
+                const SliverToBoxAdapter(child: SizedBox(height: 16)),
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
                       'Windows',
                       style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
                     ),
@@ -3681,6 +3976,12 @@ class _ScreenCapturePickerDialogState extends State<_ScreenCapturePickerDialog> 
         ),
         FilledButton(
           onPressed: () async {
+            if (_target == ScreenCaptureTarget.region) {
+              final region = _selectedRegion;
+              if (region == null) return;
+              Navigator.pop(context, _ScreenCaptureChoice.regionCapture(region));
+              return;
+            }
             if (_target == ScreenCaptureTarget.screen) {
               if (_selectedMonitorId == null || _selectedMonitorLabel == null) return;
               Navigator.pop(
@@ -4538,5 +4839,264 @@ class _SessionsListPageState extends State<SessionsListPage> {
         ],
       ),
     );
+  }
+}
+
+/// Dialog for selecting a screen region on a captured screenshot.
+class _RegionSelectorDialog extends StatefulWidget {
+  final _MonitorInfo monitor;
+  final ui.Image screenshot;
+  final int screenOffsetX;
+  final int screenOffsetY;
+  final int screenWidth;
+  final int screenHeight;
+
+  const _RegionSelectorDialog({
+    required this.monitor,
+    required this.screenshot,
+    required this.screenOffsetX,
+    required this.screenOffsetY,
+    required this.screenWidth,
+    required this.screenHeight,
+  });
+
+  @override
+  State<_RegionSelectorDialog> createState() => _RegionSelectorDialogState();
+}
+
+class _RegionSelectorDialogState extends State<_RegionSelectorDialog> {
+  Offset? _startPoint;
+  Offset? _currentPoint;
+  bool _isDragging = false;
+  final GlobalKey _imageKey = GlobalKey();
+
+  Rect? get _selectionRect {
+    if (_startPoint == null || _currentPoint == null) return null;
+    return Rect.fromPoints(_startPoint!, _currentPoint!);
+  }
+
+  void _onPanStart(DragStartDetails details) {
+    setState(() {
+      _startPoint = details.localPosition;
+      _currentPoint = details.localPosition;
+      _isDragging = true;
+    });
+  }
+
+  void _onPanUpdate(DragUpdateDetails details) {
+    setState(() {
+      _currentPoint = details.localPosition;
+    });
+  }
+
+  void _onPanEnd(DragEndDetails details) {
+    final rect = _selectionRect;
+    if (rect == null || rect.width < 30 || rect.height < 30) {
+      setState(() {
+        _startPoint = null;
+        _currentPoint = null;
+        _isDragging = false;
+      });
+      return;
+    }
+
+    // Get the render box to calculate scale factor
+    final renderBox = _imageKey.currentContext?.findRenderObject() as RenderBox?;
+    if (renderBox == null) return;
+
+    final displaySize = renderBox.size;
+    final scaleX = widget.screenWidth / displaySize.width;
+    final scaleY = widget.screenHeight / displaySize.height;
+
+    // Convert from display coordinates to actual screen coordinates
+    final region = _RegionBounds(
+      x: (rect.left * scaleX).round() + widget.screenOffsetX,
+      y: (rect.top * scaleY).round() + widget.screenOffsetY,
+      width: (rect.width * scaleX).round(),
+      height: (rect.height * scaleY).round(),
+      monitorId: widget.monitor.id,
+      monitorLabel: widget.monitor.label,
+    );
+    Navigator.of(context).pop(region);
+  }
+
+  void _cancel() {
+    Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screenSize = MediaQuery.of(context).size;
+    final maxWidth = screenSize.width * 0.9;
+    final maxHeight = screenSize.height * 0.85;
+
+    // Calculate display size maintaining aspect ratio
+    final aspectRatio = widget.screenWidth / widget.screenHeight;
+    double displayWidth = maxWidth;
+    double displayHeight = displayWidth / aspectRatio;
+    if (displayHeight > maxHeight) {
+      displayHeight = maxHeight;
+      displayWidth = displayHeight * aspectRatio;
+    }
+
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.all(16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Header
+          Container(
+            width: displayWidth,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surface,
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.crop, size: 20),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    'Drag to select a region',
+                    style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
+                  ),
+                ),
+                if (_selectionRect != null && _selectionRect!.width >= 30 && _selectionRect!.height >= 30)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.primaryContainer,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      '${(_selectionRect!.width * widget.screenWidth / displayWidth).round()} × ${(_selectionRect!.height * widget.screenHeight / displayHeight).round()}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Theme.of(context).colorScheme.onPrimaryContainer,
+                      ),
+                    ),
+                  ),
+                const SizedBox(width: 8),
+                IconButton(
+                  onPressed: _cancel,
+                  icon: const Icon(Icons.close),
+                  tooltip: 'Cancel',
+                  visualDensity: VisualDensity.compact,
+                ),
+              ],
+            ),
+          ),
+          // Screenshot with selection overlay
+          Container(
+            width: displayWidth,
+            height: displayHeight,
+            decoration: BoxDecoration(
+              border: Border.all(color: Theme.of(context).dividerColor),
+            ),
+            child: Stack(
+              key: _imageKey,
+              children: [
+                // Screenshot
+                Positioned.fill(
+                  child: RawImage(
+                    image: widget.screenshot,
+                    fit: BoxFit.fill,
+                  ),
+                ),
+                // Gesture detector
+                Positioned.fill(
+                  child: GestureDetector(
+                    onPanStart: _onPanStart,
+                    onPanUpdate: _onPanUpdate,
+                    onPanEnd: _onPanEnd,
+                    child: MouseRegion(
+                      cursor: SystemMouseCursors.precise,
+                      child: Container(color: Colors.transparent),
+                    ),
+                  ),
+                ),
+                // Dimming mask outside selection
+                if (_selectionRect != null)
+                  ..._buildDimmingMask(_selectionRect!, Size(displayWidth, displayHeight)),
+                // Selection rectangle
+                if (_selectionRect != null)
+                  Positioned.fromRect(
+                    rect: _selectionRect!,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.blue, width: 2),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          // Footer
+          Container(
+            width: displayWidth,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surface,
+              borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: _cancel,
+                  child: const Text('Cancel'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> _buildDimmingMask(Rect selection, Size containerSize) {
+    const dimColor = Color(0x99000000);
+
+    return [
+      // Top
+      if (selection.top > 0)
+        Positioned(
+          left: 0,
+          top: 0,
+          right: 0,
+          height: selection.top.clamp(0, containerSize.height),
+          child: Container(color: dimColor),
+        ),
+      // Bottom
+      if (selection.bottom < containerSize.height)
+        Positioned(
+          left: 0,
+          top: selection.bottom.clamp(0, containerSize.height),
+          right: 0,
+          bottom: 0,
+          child: Container(color: dimColor),
+        ),
+      // Left
+      if (selection.left > 0)
+        Positioned(
+          left: 0,
+          top: selection.top.clamp(0, containerSize.height),
+          width: selection.left.clamp(0, containerSize.width),
+          height: (selection.bottom - selection.top).clamp(0, containerSize.height),
+          child: Container(color: dimColor),
+        ),
+      // Right
+      if (selection.right < containerSize.width)
+        Positioned(
+          left: selection.right.clamp(0, containerSize.width),
+          top: selection.top.clamp(0, containerSize.height),
+          right: 0,
+          height: (selection.bottom - selection.top).clamp(0, containerSize.height),
+          child: Container(color: dimColor),
+        ),
+    ];
   }
 }

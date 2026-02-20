@@ -794,6 +794,95 @@ bool FlutterWindow::OnCreate() {
           } else {
             result->Error("NO_WINDOW", "Window handle not available");
           }
+        } else if (call.method_name().compare("getVirtualScreenBounds") == 0) {
+          // Return virtual screen bounds (covers all monitors)
+          int x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+          int y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+          int cx = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+          int cy = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+          
+          flutter::EncodableMap map;
+          map[flutter::EncodableValue("x")] = flutter::EncodableValue(x);
+          map[flutter::EncodableValue("y")] = flutter::EncodableValue(y);
+          map[flutter::EncodableValue("width")] = flutter::EncodableValue(cx);
+          map[flutter::EncodableValue("height")] = flutter::EncodableValue(cy);
+          result->Success(flutter::EncodableValue(map));
+        } else if (call.method_name().compare("enterRegionSelectorMode") == 0) {
+          HWND hwnd = GetHandle();
+          if (!hwnd) {
+            result->Error("NO_WINDOW", "Window handle not available");
+            return;
+          }
+          if (region_selector_active_) {
+            result->Success(flutter::EncodableValue(true));
+            return;
+          }
+
+          // Save current window state
+          GetWindowRect(hwnd, &saved_window_rect_);
+          saved_window_style_ = GetWindowLong(hwnd, GWL_STYLE);
+          saved_window_ex_style_ = GetWindowLong(hwnd, GWL_EXSTYLE);
+
+          // Calculate virtual screen bounds (covers all monitors)
+          int x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+          int y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+          int cx = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+          int cy = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+          // Set undetectable (hidden from screen capture)
+          SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+
+          // Remove window borders and title bar, enable layered window for transparency
+          SetWindowLong(hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+          SetWindowLong(hwnd, GWL_EXSTYLE, WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT);
+
+          // Set the window to be click-through transparent but we'll handle input via Flutter
+          // Actually, we need the window to receive input, so don't use WS_EX_TRANSPARENT
+          SetWindowLong(hwnd, GWL_EXSTYLE, WS_EX_TOPMOST | WS_EX_LAYERED);
+
+          // Enable per-pixel alpha transparency
+          SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+
+          // Make window cover all monitors
+          SetWindowPos(hwnd, HWND_TOPMOST, x, y, cx, cy,
+                       SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+
+          region_selector_active_ = true;
+
+          // Return the virtual screen bounds for Flutter
+          flutter::EncodableMap map;
+          map[flutter::EncodableValue("x")] = flutter::EncodableValue(x);
+          map[flutter::EncodableValue("y")] = flutter::EncodableValue(y);
+          map[flutter::EncodableValue("width")] = flutter::EncodableValue(cx);
+          map[flutter::EncodableValue("height")] = flutter::EncodableValue(cy);
+          result->Success(flutter::EncodableValue(map));
+        } else if (call.method_name().compare("exitRegionSelectorMode") == 0) {
+          HWND hwnd = GetHandle();
+          if (!hwnd) {
+            result->Error("NO_WINDOW", "Window handle not available");
+            return;
+          }
+          if (!region_selector_active_) {
+            result->Success(flutter::EncodableValue(true));
+            return;
+          }
+
+          // Restore window visibility to screen capture
+          SetWindowDisplayAffinity(hwnd, WDA_NONE);
+
+          // Restore window styles
+          SetWindowLong(hwnd, GWL_STYLE, saved_window_style_);
+          SetWindowLong(hwnd, GWL_EXSTYLE, saved_window_ex_style_);
+
+          // Restore window position and size
+          SetWindowPos(hwnd, HWND_NOTOPMOST,
+                       saved_window_rect_.left, saved_window_rect_.top,
+                       saved_window_rect_.right - saved_window_rect_.left,
+                       saved_window_rect_.bottom - saved_window_rect_.top,
+                       SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+
+          region_selector_active_ = false;
+          result->Success(flutter::EncodableValue(true));
         } else if (call.method_name().compare("setTitleBarTheme") == 0) {
           bool isDark = true;
           if (call.arguments()) {
@@ -1096,6 +1185,48 @@ bool FlutterWindow::OnCreate() {
               },
               reinterpret_cast<LPARAM>(&ctx));
           result->Success(flutter::EncodableValue(list));
+        } else if (call.method_name().compare("captureRectPixels") == 0) {
+          // Capture a specific rectangle of the screen (for region selection)
+          int x = 0, y = 0, sw = 0, sh = 0;
+          if (call.arguments() && std::holds_alternative<flutter::EncodableMap>(*call.arguments())) {
+            const auto& args = std::get<flutter::EncodableMap>(*call.arguments());
+            auto itX = args.find(flutter::EncodableValue("x"));
+            auto itY = args.find(flutter::EncodableValue("y"));
+            auto itW = args.find(flutter::EncodableValue("width"));
+            auto itH = args.find(flutter::EncodableValue("height"));
+            if (itX != args.end()) {
+              if (std::holds_alternative<int32_t>(itX->second)) x = std::get<int32_t>(itX->second);
+              else if (std::holds_alternative<int64_t>(itX->second)) x = static_cast<int>(std::get<int64_t>(itX->second));
+            }
+            if (itY != args.end()) {
+              if (std::holds_alternative<int32_t>(itY->second)) y = std::get<int32_t>(itY->second);
+              else if (std::holds_alternative<int64_t>(itY->second)) y = static_cast<int>(std::get<int64_t>(itY->second));
+            }
+            if (itW != args.end()) {
+              if (std::holds_alternative<int32_t>(itW->second)) sw = std::get<int32_t>(itW->second);
+              else if (std::holds_alternative<int64_t>(itW->second)) sw = static_cast<int>(std::get<int64_t>(itW->second));
+            }
+            if (itH != args.end()) {
+              if (std::holds_alternative<int32_t>(itH->second)) sh = std::get<int32_t>(itH->second);
+              else if (std::holds_alternative<int64_t>(itH->second)) sh = static_cast<int>(std::get<int64_t>(itH->second));
+            }
+          }
+          if (sw <= 0 || sh <= 0) {
+            result->Error("BAD_ARGS", "Invalid or missing width/height");
+            return;
+          }
+          std::vector<uint8_t> bytes;
+          int w = 0, h = 0;
+          const bool ok = CaptureRectBgra(x, y, sw, sh, bytes, w, h);
+          if (!ok) {
+            result->Error("CAPTURE_FAILED", "Failed to capture screen region.");
+            return;
+          }
+          flutter::EncodableMap map;
+          map[flutter::EncodableValue("width")] = flutter::EncodableValue(w);
+          map[flutter::EncodableValue("height")] = flutter::EncodableValue(h);
+          map[flutter::EncodableValue("bytes")] = flutter::EncodableValue(bytes);
+          result->Success(flutter::EncodableValue(map));
         } else if (call.method_name().compare("captureMonitorPixels") == 0) {
           int64_t id = 0;
           if (call.arguments() && std::holds_alternative<flutter::EncodableMap>(*call.arguments())) {

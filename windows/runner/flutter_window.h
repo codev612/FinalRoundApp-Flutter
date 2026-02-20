@@ -28,6 +28,12 @@ class FlutterWindow : public Win32Window {
 
   // The Flutter instance hosted by this window.
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
+
+  // Region selector mode state
+  bool region_selector_active_ = false;
+  RECT saved_window_rect_ = {0, 0, 0, 0};
+  LONG saved_window_style_ = 0;
+  LONG saved_window_ex_style_ = 0;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_
