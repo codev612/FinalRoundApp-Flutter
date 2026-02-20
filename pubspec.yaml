@@ -66,6 +66,9 @@ dependencies:
   
   # Package info for reading app version
   package_info_plus: ^8.1.1
+  
+  # File picker for selecting files
+  file_picker: ^8.0.0
 
 dev_dependencies:
   flutter_test:

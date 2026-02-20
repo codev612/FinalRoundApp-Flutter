@@ -4,9 +4,10 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform;
+import 'dart:io' show File, Platform;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+import 'package:file_picker/file_picker.dart';
 import '../config/app_config.dart';
 import '../providers/speech_to_text_provider.dart';
 import '../providers/meeting_provider.dart';
@@ -1494,16 +1495,19 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     );
   }
 
-  Future<void> _askAiWithPrompt(String? question, {Uint8List? imagePngBytes}) async {
+  Future<void> _askAiWithPrompt(String? question, {List<Uint8List>? imagesPngBytes}) async {
     if (_speechProvider == null || _speechProvider!.isAiLoading) return;
     final systemPrompt = await _getRealTimePrompt();
     final wantsScreen = _autoAskUseScreen && Platform.isWindows;
 
-    Uint8List? pngBytes = imagePngBytes;
-    if (pngBytes == null && wantsScreen && !_screenCaptureInFlight) {
+    List<Uint8List>? pngBytesList = imagesPngBytes;
+    if ((pngBytesList == null || pngBytesList.isEmpty) && wantsScreen && !_screenCaptureInFlight) {
       _screenCaptureInFlight = true;
       try {
-        pngBytes = await _tryCaptureSelectedTargetPngBytes();
+        final screenCapture = await _tryCaptureSelectedTargetPngBytes();
+        if (screenCapture != null) {
+          pngBytesList = [screenCapture];
+        }
       } finally {
         _screenCaptureInFlight = false;
       }
@@ -1513,7 +1517,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
       question: question,
       systemPrompt: systemPrompt,
       model: _selectedAiModel,
-      imagePngBytes: pngBytes,
+      imagesPngBytes: pngBytesList,
     );
   }
 
@@ -1778,40 +1782,20 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     if (!mounted) return;
     if (_speechProvider?.isAiLoading == true) return;
 
-    final result = await showDialog<String>(
+    final result = await showDialog<_AskAiDialogResult>(
       context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Ask AI'),
-          content: TextField(
-            controller: _askAiController,
-            autofocus: true,
-            decoration: const InputDecoration(
-              hintText: 'Type a question (optional)',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
-            textInputAction: TextInputAction.send,
-            onSubmitted: (value) => Navigator.pop(context, value.trim()),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, null),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, _askAiController.text.trim()),
-              child: const Text('Ask'),
-            ),
-          ],
-        );
-      },
+      builder: (context) => _AskAiDialog(controller: _askAiController),
     );
 
     if (!mounted) return;
     if (result == null) return;
-    final q = result.trim();
-    await _askAiWithPrompt(q.isEmpty ? null : q);
+    
+    final q = result.question.trim();
+    final images = result.allImageBytes;
+    await _askAiWithPrompt(
+      q.isEmpty ? null : q,
+      imagesPngBytes: images.isNotEmpty ? images : null,
+    );
   }
 
   Future<void> _loadQuestionTemplates() async {
@@ -5098,5 +5082,324 @@ class _RegionSelectorDialogState extends State<_RegionSelectorDialog> {
           child: Container(color: dimColor),
         ),
     ];
+  }
+}
+
+/// Attached file info
+class _AttachedFile {
+  final String name;
+  final Uint8List bytes;
+
+  const _AttachedFile({required this.name, required this.bytes});
+}
+
+/// Result from the Ask AI dialog
+class _AskAiDialogResult {
+  final String question;
+  final List<_AttachedFile> attachments;
+
+  const _AskAiDialogResult({required this.question, this.attachments = const []});
+  
+  /// All attachment image bytes as a list
+  List<Uint8List> get allImageBytes => attachments.map((a) => a.bytes).toList();
+}
+
+/// Enhanced Ask AI dialog with multiple file attachment support
+class _AskAiDialog extends StatefulWidget {
+  final TextEditingController controller;
+
+  const _AskAiDialog({required this.controller});
+
+  @override
+  State<_AskAiDialog> createState() => _AskAiDialogState();
+}
+
+class _AskAiDialogState extends State<_AskAiDialog> {
+  static const MethodChannel _windowChannel = MethodChannel('com.finalround/window');
+  final List<_AttachedFile> _attachments = [];
+  static const int _maxAttachments = 10;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.clear();
+  }
+
+  Future<void> _pickFiles() async {
+    if (_attachments.length >= _maxAttachments) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Maximum 10 attachments allowed')),
+        );
+      }
+      return;
+    }
+    
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+        allowMultiple: true,
+        withData: true,
+      );
+
+      if (result != null && result.files.isNotEmpty) {
+        for (final file in result.files) {
+          if (_attachments.length >= _maxAttachments) break;
+          
+          Uint8List? bytes;
+          if (file.bytes != null) {
+            bytes = file.bytes;
+          } else if (file.path != null) {
+            bytes = await File(file.path!).readAsBytes();
+          }
+          
+          if (bytes != null) {
+            final pngBytes = await _convertToPng(bytes, file.name);
+            setState(() {
+              _attachments.add(_AttachedFile(name: file.name, bytes: pngBytes));
+            });
+          }
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to pick file: $e')),
+        );
+      }
+    }
+  }
+
+  Future<Uint8List> _convertToPng(Uint8List bytes, String fileName) async {
+    final ext = fileName.toLowerCase();
+    if (ext.endsWith('.png')) return bytes;
+    
+    try {
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      final image = frame.image;
+      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      image.dispose();
+      if (byteData != null) {
+        return byteData.buffer.asUint8List();
+      }
+    } catch (_) {}
+    return bytes;
+  }
+
+  Future<void> _handlePaste() async {
+    if (_attachments.length >= _maxAttachments) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Maximum 10 attachments allowed')),
+        );
+      }
+      return;
+    }
+    
+    try {
+      if (!Platform.isWindows) return;
+      
+      final result = await _windowChannel.invokeMethod<dynamic>('getClipboardImage');
+      if (result is Map) {
+        final bytes = result['bytes'];
+        final width = (result['width'] as num?)?.toInt() ?? 0;
+        final height = (result['height'] as num?)?.toInt() ?? 0;
+        
+        if (bytes is Uint8List && bytes.isNotEmpty && width > 0 && height > 0) {
+          final completer = Completer<ui.Image>();
+          ui.decodeImageFromPixels(
+            bytes, width, height, ui.PixelFormat.bgra8888,
+            (img) => completer.complete(img),
+          );
+          final image = await completer.future;
+          final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+          image.dispose();
+          
+          if (byteData != null) {
+            final pngBytes = byteData.buffer.asUint8List();
+            final name = 'pasted_${_attachments.length + 1}.png';
+            setState(() {
+              _attachments.add(_AttachedFile(name: name, bytes: pngBytes));
+            });
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Paste error: $e');
+    }
+  }
+
+  void _removeAttachment(int index) {
+    setState(() {
+      _attachments.removeAt(index);
+    });
+  }
+
+  void _clearAllAttachments() {
+    setState(() {
+      _attachments.clear();
+    });
+  }
+
+  void _submit() {
+    Navigator.pop(
+      context,
+      _AskAiDialogResult(
+        question: widget.controller.text.trim(),
+        attachments: List.from(_attachments),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    
+    return AlertDialog(
+      title: Row(
+        children: [
+          const Icon(Icons.auto_awesome, size: 24),
+          const SizedBox(width: 8),
+          const Expanded(child: Text('Ask AI')),
+          if (_attachments.isNotEmpty) ...[
+            Text(
+              '${_attachments.length}/$_maxAttachments',
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: cs.onSurface.withValues(alpha: 0.6),
+              ),
+            ),
+            const SizedBox(width: 4),
+            IconButton(
+              onPressed: _clearAllAttachments,
+              icon: const Icon(Icons.clear_all, size: 20),
+              tooltip: 'Clear all attachments',
+              visualDensity: VisualDensity.compact,
+            ),
+          ],
+          IconButton(
+            onPressed: _attachments.length >= _maxAttachments ? null : _pickFiles,
+            icon: const Icon(Icons.add_photo_alternate),
+            tooltip: 'Add images',
+            visualDensity: VisualDensity.compact,
+          ),
+          IconButton(
+            onPressed: _attachments.length >= _maxAttachments ? null : _handlePaste,
+            icon: const Icon(Icons.content_paste),
+            tooltip: 'Paste image (Ctrl+V)',
+            visualDensity: VisualDensity.compact,
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: 550,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Attachments grid - small thumbnails
+            if (_attachments.isNotEmpty) ...[
+              Container(
+                constraints: const BoxConstraints(maxHeight: 100),
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      for (int i = 0; i < _attachments.length; i++)
+                        Padding(
+                          padding: EdgeInsets.only(right: i < _attachments.length - 1 ? 8 : 0),
+                          child: _buildThumbnail(i, _attachments[i], cs),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
+            // Text input
+            Focus(
+              onKeyEvent: (node, event) {
+                if (event is KeyDownEvent &&
+                    event.logicalKey == LogicalKeyboardKey.keyV &&
+                    (HardwareKeyboard.instance.isControlPressed || 
+                     HardwareKeyboard.instance.isMetaPressed)) {
+                  _handlePaste();
+                  return KeyEventResult.handled;
+                }
+                return KeyEventResult.ignored;
+              },
+              child: TextField(
+                controller: widget.controller,
+                autofocus: true,
+                maxLines: 6,
+                minLines: 4,
+                decoration: InputDecoration(
+                  hintText: _attachments.isNotEmpty
+                      ? 'Ask a question about ${_attachments.length == 1 ? "this image" : "these images"}...'
+                      : 'Type a question or leave empty to ask about the conversation...',
+                  border: const OutlineInputBorder(),
+                  alignLabelWithHint: true,
+                  helperText: 'Tip: Paste images with Ctrl+V or drag & drop',
+                  helperStyle: TextStyle(color: cs.onSurface.withValues(alpha: 0.5)),
+                ),
+                textInputAction: TextInputAction.newline,
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, null),
+          child: const Text('Cancel'),
+        ),
+        FilledButton.icon(
+          onPressed: _submit,
+          icon: const Icon(Icons.send, size: 18),
+          label: const Text('Ask'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildThumbnail(int index, _AttachedFile file, ColorScheme cs) {
+    return Stack(
+      children: [
+        Container(
+          width: 72,
+          height: 72,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: cs.outline.withValues(alpha: 0.3)),
+            color: cs.surfaceContainerHighest,
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(7),
+            child: Image.memory(
+              file.bytes,
+              width: 72,
+              height: 72,
+              fit: BoxFit.cover,
+            ),
+          ),
+        ),
+        Positioned(
+          top: 2,
+          right: 2,
+          child: GestureDetector(
+            onTap: () => _removeAttachment(index),
+            child: Container(
+              width: 20,
+              height: 20,
+              decoration: BoxDecoration(
+                color: cs.error,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.close, size: 14, color: Colors.white),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 }

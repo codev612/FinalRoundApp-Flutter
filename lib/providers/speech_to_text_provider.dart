@@ -549,7 +549,7 @@ class SpeechToTextProvider extends ChangeNotifier {
     return null;
   }
 
-  Future<void> askAi({String? question, String? systemPrompt, String? model, Uint8List? imagePngBytes}) async {
+  Future<void> askAi({String? question, String? systemPrompt, String? model, List<Uint8List>? imagesPngBytes}) async {
     final ai = _aiService;
     if (ai == null) {
       _aiErrorMessage = 'AI service not initialized';
@@ -560,28 +560,34 @@ class SpeechToTextProvider extends ChangeNotifier {
 
     final trimmedQuestion = question?.trim() ?? '';
     final turns = _buildAiTurns();
-    final hasImage = imagePngBytes != null && imagePngBytes.isNotEmpty;
+    final validImages = imagesPngBytes?.where((b) => b.isNotEmpty).toList() ?? [];
+    final hasImages = validImages.isNotEmpty;
     
     // If no custom question provided, try to use the last mic turn as question
     String? finalQuestion = trimmedQuestion.isNotEmpty ? trimmedQuestion : _defaultQuestionFromLastMicTurn();
 
     // If user wants to ask with a screenshot but there is no mic question yet,
     // provide a sensible default question.
-    if (finalQuestion == null && hasImage) {
-      finalQuestion = 'Analyze the attached screenshot and the conversation so far. Tell me what I should say next. Be concise.';
+    if (finalQuestion == null && hasImages) {
+      final imageWord = validImages.length == 1 ? 'screenshot' : 'screenshots';
+      finalQuestion = 'Analyze the attached $imageWord and the conversation so far. Tell me what I should say next. Be concise.';
     }
     
     // Require transcript only if no question is provided (neither custom nor from transcript)
-    if (turns.isEmpty && finalQuestion == null && !hasImage) {
+    if (turns.isEmpty && finalQuestion == null && !hasImages) {
       _aiErrorMessage = 'No transcript yet';
       notifyListeners();
       return;
     }
 
-    // If a screenshot is attached, explicitly tell the model to use it as context.
-    final questionToSend = (hasImage && finalQuestion != null && finalQuestion.trim().isNotEmpty)
-        ? 'Screenshot attached.\n\n$finalQuestion'
-        : finalQuestion;
+    // If screenshots are attached, explicitly tell the model to use them as context.
+    String? questionToSend;
+    if (hasImages && finalQuestion != null && finalQuestion.trim().isNotEmpty) {
+      final imageWord = validImages.length == 1 ? 'Screenshot' : '${validImages.length} screenshots';
+      questionToSend = '$imageWord attached.\n\n$finalQuestion';
+    } else {
+      questionToSend = finalQuestion;
+    }
 
     _isAiLoading = true;
     _aiErrorMessage = '';
@@ -591,7 +597,7 @@ class SpeechToTextProvider extends ChangeNotifier {
     try {
       // For image requests, prefer HTTP (payload can be large).
       // If AI WS is configured, stream token deltas for a more responsive UI.
-      if (ai.aiWsUrl != null && !hasImage) {
+      if (ai.aiWsUrl != null && !hasImages) {
         await for (final delta in ai.streamRespond(
           turns: turns,
           question: questionToSend,
@@ -609,7 +615,7 @@ class SpeechToTextProvider extends ChangeNotifier {
           mode: 'reply',
           systemPrompt: systemPrompt,
           model: model,
-          imagePngBytes: imagePngBytes,
+          imagesPngBytes: validImages.isNotEmpty ? validImages : null,
         );
         _aiResponse = text;
       }

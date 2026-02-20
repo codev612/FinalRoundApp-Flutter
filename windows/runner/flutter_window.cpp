@@ -794,6 +794,74 @@ bool FlutterWindow::OnCreate() {
           } else {
             result->Error("NO_WINDOW", "Window handle not available");
           }
+        } else if (call.method_name().compare("getClipboardImage") == 0) {
+          // Get image from Windows clipboard
+          if (!OpenClipboard(nullptr)) {
+            result->Error("CLIPBOARD_ERROR", "Failed to open clipboard");
+            return;
+          }
+
+          // Try to get CF_DIBV5 first (better quality), then CF_DIB
+          HANDLE hDib = GetClipboardData(CF_DIBV5);
+          if (!hDib) hDib = GetClipboardData(CF_DIB);
+          
+          if (hDib) {
+            BITMAPINFOHEADER* bi = static_cast<BITMAPINFOHEADER*>(GlobalLock(hDib));
+            if (bi) {
+              int width = bi->biWidth;
+              int height = abs(bi->biHeight);
+              int bpp = bi->biBitCount;
+              bool topDown = bi->biHeight < 0;
+
+              // Calculate the offset to pixel data
+              int paletteSize = 0;
+              if (bpp <= 8) {
+                paletteSize = (bi->biClrUsed ? bi->biClrUsed : (1 << bpp)) * sizeof(RGBQUAD);
+              } else if (bi->biCompression == BI_BITFIELDS) {
+                paletteSize = 3 * sizeof(DWORD);
+              }
+
+              BYTE* srcBits = reinterpret_cast<BYTE*>(bi) + bi->biSize + paletteSize;
+
+              // Convert to 32-bit BGRA
+              std::vector<uint8_t> bgraData(width * height * 4);
+              int srcStride = ((width * bpp + 31) / 32) * 4;
+
+              for (int y = 0; y < height; y++) {
+                int srcY = topDown ? y : (height - 1 - y);
+                BYTE* srcRow = srcBits + srcY * srcStride;
+                uint8_t* dstRow = bgraData.data() + y * width * 4;
+
+                for (int x = 0; x < width; x++) {
+                  if (bpp == 32) {
+                    dstRow[x * 4 + 0] = srcRow[x * 4 + 0]; // B
+                    dstRow[x * 4 + 1] = srcRow[x * 4 + 1]; // G
+                    dstRow[x * 4 + 2] = srcRow[x * 4 + 2]; // R
+                    dstRow[x * 4 + 3] = srcRow[x * 4 + 3]; // A
+                  } else if (bpp == 24) {
+                    dstRow[x * 4 + 0] = srcRow[x * 3 + 0]; // B
+                    dstRow[x * 4 + 1] = srcRow[x * 3 + 1]; // G
+                    dstRow[x * 4 + 2] = srcRow[x * 3 + 2]; // R
+                    dstRow[x * 4 + 3] = 255; // A
+                  }
+                }
+              }
+
+              GlobalUnlock(hDib);
+
+              // Return BGRA bytes (Flutter will convert to PNG)
+              flutter::EncodableMap map;
+              map[flutter::EncodableValue("width")] = flutter::EncodableValue(width);
+              map[flutter::EncodableValue("height")] = flutter::EncodableValue(height);
+              map[flutter::EncodableValue("bytes")] = flutter::EncodableValue(bgraData);
+              CloseClipboard();
+              result->Success(flutter::EncodableValue(map));
+              return;
+            }
+          }
+
+          CloseClipboard();
+          result->Success(flutter::EncodableValue());
         } else if (call.method_name().compare("getVirtualScreenBounds") == 0) {
           // Return virtual screen bounds (covers all monitors)
           int x = GetSystemMetrics(SM_XVIRTUALSCREEN);

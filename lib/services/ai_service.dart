@@ -256,13 +256,14 @@ class AiService {
     String mode = 'reply',
     String? systemPrompt,
     String? model,
-    Uint8List? imagePngBytes,
+    List<Uint8List>? imagesPngBytes,
     Duration timeout = const Duration(seconds: 60),
   }) async {
-    final hasImage = imagePngBytes != null && imagePngBytes.isNotEmpty;
+    final validImages = imagesPngBytes?.where((b) => b.isNotEmpty).toList() ?? [];
+    final hasImages = validImages.isNotEmpty;
 
     // For image requests, prefer HTTP (payload can be large and WS may have size limits).
-    if (aiWsUrl != null && !hasImage) {
+    if (aiWsUrl != null && !hasImages) {
       final buffer = StringBuffer();
       try {
         await for (final delta in streamRespond(
@@ -299,8 +300,8 @@ class AiService {
     final chosenModel = model?.trim() ?? '';
     if (chosenModel.isNotEmpty) payload['model'] = chosenModel;
 
-    if (hasImage) {
-      payload['imagePngBase64'] = base64Encode(imagePngBytes!);
+    if (hasImages) {
+      payload['imagesPngBase64'] = validImages.map((b) => base64Encode(b)).toList();
     }
 
     final headers = <String, String>{
