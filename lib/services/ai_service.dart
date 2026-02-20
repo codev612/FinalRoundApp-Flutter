@@ -166,6 +166,7 @@ class AiService {
     String mode = 'reply',
     String? systemPrompt,
     String? model,
+    List<Map<String, dynamic>>? previousAiResponses,
     Duration timeout = const Duration(seconds: 60),
   }) {
     if (aiWsUrl == null) {
@@ -206,6 +207,10 @@ class AiService {
 
         final chosenModel = model?.trim() ?? '';
         if (chosenModel.isNotEmpty) payload['model'] = chosenModel;
+        
+        if (previousAiResponses != null && previousAiResponses.isNotEmpty) {
+          payload['previousAiResponses'] = previousAiResponses;
+        }
 
         print('[AiService] Sending ai_request: mode=$mode, requestId=$requestId');
         try {
@@ -257,6 +262,7 @@ class AiService {
     String? systemPrompt,
     String? model,
     List<Uint8List>? imagesPngBytes,
+    List<Map<String, dynamic>>? previousAiResponses,
     Duration timeout = const Duration(seconds: 60),
   }) async {
     final validImages = imagesPngBytes?.where((b) => b.isNotEmpty).toList() ?? [];
@@ -272,6 +278,7 @@ class AiService {
           mode: mode,
           systemPrompt: systemPrompt,
           model: model,
+          previousAiResponses: previousAiResponses,
           timeout: timeout,
         )) {
           buffer.write(delta);
@@ -302,6 +309,10 @@ class AiService {
 
     if (hasImages) {
       payload['imagesPngBase64'] = validImages.map((b) => base64Encode(b)).toList();
+    }
+    
+    if (previousAiResponses != null && previousAiResponses.isNotEmpty) {
+      payload['previousAiResponses'] = previousAiResponses;
     }
 
     final headers = <String, String>{

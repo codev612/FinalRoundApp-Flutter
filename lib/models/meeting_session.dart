@@ -1,5 +1,6 @@
 import 'transcript_bubble.dart';
 import 'meeting_mode.dart';
+import 'ai_response_entry.dart';
 
 class MeetingSession {
   final String id;
@@ -13,6 +14,8 @@ class MeetingSession {
   /// Mode key: built-in enum name (e.g. "general") or "custom:{id}" for custom modes.
   final String modeKey;
   final Map<String, dynamic> metadata;
+  /// AI response history for this session
+  final List<AiResponseEntry> aiResponses;
 
   MeetingSession({
     required this.id,
@@ -25,6 +28,7 @@ class MeetingSession {
     this.questions,
     this.modeKey = 'general',
     this.metadata = const {},
+    this.aiResponses = const [],
   });
 
   /// Built-in mode when [modeKey] is an enum name; null when custom.
@@ -46,6 +50,7 @@ class MeetingSession {
     String? questions,
     String? modeKey,
     Map<String, dynamic>? metadata,
+    List<AiResponseEntry>? aiResponses,
   }) {
     return MeetingSession(
       id: id ?? this.id,
@@ -58,6 +63,7 @@ class MeetingSession {
       questions: questions ?? this.questions,
       modeKey: modeKey ?? this.modeKey,
       metadata: metadata ?? this.metadata,
+      aiResponses: aiResponses ?? this.aiResponses,
     );
   }
 
@@ -78,6 +84,7 @@ class MeetingSession {
       'questions': questions,
       'mode': modeKey,
       'metadata': metadata,
+      'aiResponses': aiResponses.map((r) => r.toJson()).toList(),
     };
   }
 
@@ -105,6 +112,13 @@ class MeetingSession {
     final bubblesList = switch (rawBubbles) {
       List<dynamic> v => v,
       Map v => v.values.toList(growable: false),
+      _ => const <dynamic>[],
+    };
+
+    // Parse AI responses
+    final rawAiResponses = json['aiResponses'];
+    final aiResponsesList = switch (rawAiResponses) {
+      List<dynamic> v => v,
       _ => const <dynamic>[],
     };
 
@@ -136,6 +150,10 @@ class MeetingSession {
       questions: json['questions'] as String?,
       modeKey: (json['mode'] as String?) ?? (json['modeKey'] as String?) ?? 'general',
       metadata: json['metadata'] as Map<String, dynamic>? ?? {},
+      aiResponses: aiResponsesList.map((r) {
+        final m = (r is Map) ? Map<String, dynamic>.from(r) : <String, dynamic>{};
+        return AiResponseEntry.fromJson(m);
+      }).toList(),
     );
   }
 

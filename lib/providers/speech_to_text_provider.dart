@@ -9,6 +9,7 @@ import '../services/audio_capture_service.dart';
 import '../services/windows_audio_service.dart';
 import '../services/ai_service.dart';
 import '../models/transcript_bubble.dart';
+import '../models/ai_response_entry.dart';
 
 class SpeechToTextProvider extends ChangeNotifier {
   TranscriptionService? _transcriptionService;
@@ -61,9 +62,13 @@ class SpeechToTextProvider extends ChangeNotifier {
   // Older bubbles are already saved to the session, so we can safely limit memory
   static const int _maxBubblesInMemory = 2000; // Keep last 2000 bubbles in memory
 
-  String _aiResponse = '';
+  // AI response state (current streaming response only)
+  String _currentAiResponse = '';
   String _aiErrorMessage = '';
   bool _isAiLoading = false;
+  
+  // Callback to add completed AI response to the session
+  void Function(AiResponseEntry)? _onAiResponseCompleted;
   
   // Auto ask callback - called when a question is detected from others
   Function(String)? _onQuestionDetected;
@@ -130,9 +135,16 @@ class SpeechToTextProvider extends ChangeNotifier {
   List<TranscriptBubble> get bubbles => List.unmodifiable(_bubbles);
   String get errorMessage => _errorMessage;
 
-  String get aiResponse => _aiResponse;
+  /// Current AI response being generated (for streaming display)
+  String get aiResponse => _currentAiResponse;
+  
   String get aiErrorMessage => _aiErrorMessage;
   bool get isAiLoading => _isAiLoading;
+  
+  /// Set callback for when AI response completes (to persist to session)
+  void setOnAiResponseCompleted(void Function(AiResponseEntry)? callback) {
+    _onAiResponseCompleted = callback;
+  }
 
   String _appendWithOverlap(String existing, String next) {
     final nextTrimmed = next.trim();
@@ -549,7 +561,14 @@ class SpeechToTextProvider extends ChangeNotifier {
     return null;
   }
 
-  Future<void> askAi({String? question, String? systemPrompt, String? model, List<Uint8List>? imagesPngBytes}) async {
+  Future<void> askAi({
+    String? question,
+    String? displayQuestion,
+    String? systemPrompt, 
+    String? model, 
+    List<Uint8List>? imagesPngBytes,
+    List<AiResponseEntry>? previousResponses,
+  }) async {
     final ai = _aiService;
     if (ai == null) {
       _aiErrorMessage = 'AI service not initialized';
@@ -580,6 +599,15 @@ class SpeechToTextProvider extends ChangeNotifier {
       return;
     }
 
+    // Convert previous responses to format expected by AI service (up to 3 most recent)
+    List<Map<String, dynamic>>? previousResponsesForApi;
+    if (previousResponses != null && previousResponses.isNotEmpty) {
+      previousResponsesForApi = previousResponses.take(3).map((r) => {
+        'question': r.question,
+        'response': r.response,
+      }).toList();
+    }
+
     // If screenshots are attached, explicitly tell the model to use them as context.
     String? questionToSend;
     if (hasImages && finalQuestion != null && finalQuestion.trim().isNotEmpty) {
@@ -591,8 +619,13 @@ class SpeechToTextProvider extends ChangeNotifier {
 
     _isAiLoading = true;
     _aiErrorMessage = '';
-    _aiResponse = '';
+    _currentAiResponse = '';
     notifyListeners();
+
+    // Use displayQuestion for history if provided, otherwise use the actual question
+    final questionForHistory = displayQuestion?.trim().isNotEmpty == true 
+        ? displayQuestion! 
+        : (finalQuestion ?? questionToSend ?? '');
 
     try {
       // For image requests, prefer HTTP (payload can be large).
@@ -604,8 +637,9 @@ class SpeechToTextProvider extends ChangeNotifier {
           mode: 'reply',
           systemPrompt: systemPrompt,
           model: model,
+          previousAiResponses: previousResponsesForApi,
         )) {
-          _aiResponse += delta;
+          _currentAiResponse += delta;
           notifyListeners();
         }
       } else {
@@ -616,10 +650,21 @@ class SpeechToTextProvider extends ChangeNotifier {
           systemPrompt: systemPrompt,
           model: model,
           imagesPngBytes: validImages.isNotEmpty ? validImages : null,
+          previousAiResponses: previousResponsesForApi,
         );
-        _aiResponse = text;
+        _currentAiResponse = text;
       }
       _aiErrorMessage = '';
+      
+      // Notify callback to persist response to session
+      if (_currentAiResponse.isNotEmpty && _onAiResponseCompleted != null) {
+        _onAiResponseCompleted!(AiResponseEntry(
+          question: questionForHistory,
+          response: _currentAiResponse,
+          timestamp: DateTime.now(),
+          hasImages: hasImages,
+        ));
+      }
     } catch (e) {
       _aiErrorMessage = e.toString();
     } finally {
@@ -1353,7 +1398,14 @@ class SpeechToTextProvider extends ChangeNotifier {
   void clearTranscript() {
     _bubbles.clear();
     _errorMessage = '';
-    _aiResponse = '';
+    _currentAiResponse = '';
+    _aiErrorMessage = '';
+    notifyListeners();
+  }
+
+  /// Clear current AI response (not the history, which is in MeetingProvider)
+  void clearCurrentAiResponse() {
+    _currentAiResponse = '';
     _aiErrorMessage = '';
     notifyListeners();
   }

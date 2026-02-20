@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:flutter_highlight/themes/atom-one-dark.dart';
+import 'package:highlight/highlight.dart' show highlight;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show File, Platform;
@@ -15,6 +18,7 @@ import '../providers/auth_provider.dart';
 import '../models/meeting_session.dart';
 import '../models/meeting_mode.dart';
 import '../models/transcript_bubble.dart';
+import '../models/ai_response_entry.dart';
 import '../services/meeting_question_service.dart';
 import '../services/meeting_mode_service.dart';
 import '../services/ai_service.dart';
@@ -158,8 +162,9 @@ class _ScreenCaptureChoice {
 
 class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
   final ScrollController _transcriptScrollController = ScrollController();
+  final ScrollController _aiResponseScrollController = ScrollController();
   final TextEditingController _askAiController = TextEditingController();
-  final TextEditingController _aiResponseController = TextEditingController();
+  int _lastAiHistoryCount = 0;
   static const MethodChannel _windowChannel = MethodChannel('com.finalround/window');
   int _lastBubbleCount = 0;
   String _lastTailSignature = '';
@@ -247,6 +252,11 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
         if (mounted) {
           _refreshBilling();
         }
+      });
+      
+      // Set up callback to persist AI responses to the current session
+      _speechProvider!.setOnAiResponseCompleted((response) {
+        _meetingProvider?.addAiResponseToSession(response);
       });
       
       // Update AI service with auth token (but don't restore session here - we'll handle it below)
@@ -805,8 +815,8 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     }
     _recordingTimer?.cancel();
     _transcriptScrollController.dispose();
+    _aiResponseScrollController.dispose();
     _askAiController.dispose();
-    _aiResponseController.dispose();
     _speechProvider?.removeListener(_syncBubblesToSession);
     _meetingProvider?.removeListener(_onSessionChanged);
     super.dispose();
@@ -1606,7 +1616,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     );
   }
 
-  Future<void> _askAiWithPrompt(String? question, {List<Uint8List>? imagesPngBytes}) async {
+  Future<void> _askAiWithPrompt(String? question, {String? displayQuestion, List<Uint8List>? imagesPngBytes}) async {
     if (_speechProvider == null || _speechProvider!.isAiLoading) return;
     final systemPrompt = await _getRealTimePrompt();
     final wantsScreen = _autoAskUseScreen && Platform.isWindows;
@@ -1624,12 +1634,91 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
       }
     }
 
+    // Get previous AI responses from current session (up to 3 most recent)
+    final previousResponses = _meetingProvider?.currentSession?.aiResponses;
+    
     _speechProvider!.askAi(
       question: question,
+      displayQuestion: displayQuestion,
       systemPrompt: systemPrompt,
       model: _selectedAiModel,
       imagesPngBytes: pngBytesList,
+      previousResponses: previousResponses,
     );
+  }
+
+  /// Find the latest question from system bubbles up to and including [bubbleIndex].
+  /// Looks at up to [maxChars] characters and returns the most recent complete question found.
+  String? _findLatestQuestion(
+    List<TranscriptBubble> bubbles,
+    int bubbleIndex,
+    int maxChars,
+  ) {
+    if (bubbleIndex < 0 || bubbleIndex >= bubbles.length) {
+      return null;
+    }
+
+    // Collect text from system bubbles, starting from current and going backwards
+    final textParts = <String>[];
+    int totalChars = 0;
+    
+    for (int i = bubbleIndex; i >= 0 && totalChars < maxChars; i--) {
+      final bubble = bubbles[i];
+      // Only include system bubbles (the other person's speech)
+      if (bubble.source == TranscriptSource.system) {
+        final text = bubble.text.trim();
+        if (text.isNotEmpty) {
+          textParts.insert(0, text); // Insert at beginning to maintain order
+          totalChars += text.length;
+        }
+      }
+    }
+    
+    final contextText = textParts.join(' ');
+    
+    // Find the last question mark position
+    final lastQMark = contextText.lastIndexOf('?');
+    if (lastQMark == -1) {
+      return null;
+    }
+    
+    // Find the start of this question by looking backwards for sentence boundaries
+    // A sentence typically starts after . ! ? or at the beginning of text
+    int questionStart = 0;
+    for (int i = lastQMark - 1; i >= 0; i--) {
+      final char = contextText[i];
+      // Stop at period or exclamation only if followed by space and capital letter
+      // This handles cases like "forward? And" where "And" continues the question
+      if (char == '.' || char == '!') {
+        // Check if this is really a sentence end (not abbreviation, etc.)
+        if (i + 2 < contextText.length) {
+          final nextNonSpace = contextText.substring(i + 1).trimLeft();
+          if (nextNonSpace.isNotEmpty) {
+            final firstChar = nextNonSpace[0];
+            // If next word starts with lowercase or is a continuation word, keep going
+            final continuationWords = ['and', 'or', 'but', 'so', 'because', 'which', 'that', 'who', 'what', 'how'];
+            final nextWord = nextNonSpace.split(RegExp(r'\s+')).first.toLowerCase();
+            if (firstChar.toUpperCase() != firstChar || continuationWords.contains(nextWord)) {
+              continue; // Not a real sentence boundary, keep looking
+            }
+          }
+        }
+        questionStart = i + 1;
+        break;
+      }
+    }
+    
+    // Extract the question from start to last question mark (inclusive)
+    String question = contextText.substring(questionStart, lastQMark + 1).trim();
+    
+    // Clean up - remove leading punctuation/whitespace
+    question = question.replaceFirst(RegExp(r'^[.,;:\s]+'), '');
+    
+    if (question.length > 5) {
+      return question;
+    }
+    
+    return null;
   }
 
   Widget _buildUseScreenCheckboxInline() {
@@ -1680,6 +1769,297 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
         _buildUseScreenCheckboxInline(),
       ],
     );
+  }
+
+  /// Build AI response history panel showing all responses
+  Widget _buildAiResponseContent(String currentText, MeetingProvider? meetingProvider, SpeechToTextProvider? speechProvider) {
+    final isLoading = speechProvider?.isAiLoading ?? false;
+    
+    // Get history from current session
+    final history = meetingProvider?.currentSession?.aiResponses ?? [];
+    
+    // If no history and no current response, show placeholder
+    if (history.isEmpty && currentText.isEmpty && !isLoading) {
+      return const Center(
+        child: Text(
+          'AI response will appear here...',
+          style: TextStyle(
+            color: Colors.white54,
+            fontStyle: FontStyle.italic,
+          ),
+        ),
+      );
+    }
+
+    // Auto-scroll to bottom when new messages arrive or during streaming
+    final currentCount = history.length + (isLoading ? 1 : 0);
+    if (currentCount != _lastAiHistoryCount || isLoading) {
+      _lastAiHistoryCount = currentCount;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_aiResponseScrollController.hasClients) {
+          _aiResponseScrollController.animateTo(
+            _aiResponseScrollController.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOut,
+          );
+        }
+      });
+    }
+
+    // History is stored newest-first, but we want to display oldest-first (newest at bottom)
+    final reversedHistory = history.reversed.toList();
+    final hasStreamingResponse = isLoading && currentText.isNotEmpty;
+
+    return Column(
+      children: [
+        // Clear history button when there's history
+        if (history.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                Text(
+                  '${history.length} response${history.length > 1 ? 's' : ''}',
+                  style: const TextStyle(
+                    color: Colors.white54,
+                    fontSize: 12,
+                  ),
+                ),
+                const Spacer(),
+                TextButton.icon(
+                  onPressed: () {
+                    meetingProvider?.clearSessionAiHistory();
+                  },
+                  icon: const Icon(Icons.clear_all, size: 16),
+                  label: const Text('Clear'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.white54,
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        
+        // History list (oldest first, newest at bottom)
+        Expanded(
+          child: ListView.builder(
+            controller: _aiResponseScrollController,
+            itemCount: reversedHistory.length + (hasStreamingResponse ? 1 : 0),
+            itemBuilder: (context, index) {
+              // Show completed history entries first
+              if (index < reversedHistory.length) {
+                final entry = reversedHistory[index];
+                return _buildAiResponseEntry(
+                  question: entry.question,
+                  response: entry.response,
+                  timestamp: entry.timestamp,
+                  hasImages: entry.hasImages,
+                  isStreaming: false,
+                );
+              }
+              
+              // Show streaming response at the bottom (last item)
+              return _buildAiResponseEntry(
+                question: 'Processing...',
+                response: currentText,
+                timestamp: DateTime.now(),
+                hasImages: false,
+                isStreaming: true,
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Build a single AI response entry
+  Widget _buildAiResponseEntry({
+    required String question,
+    required String response,
+    required DateTime timestamp,
+    required bool hasImages,
+    required bool isStreaming,
+  }) {
+    final timeStr = '${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
+    
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: isStreaming ? Colors.lightBlueAccent.withValues(alpha: 0.5) : Colors.white12,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Question header
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.05),
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(7)),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  hasImages ? Icons.image : Icons.question_answer,
+                  size: 14,
+                  color: Colors.white54,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    question.isNotEmpty ? question : '(No question)',
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                if (isStreaming)
+                  const SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(strokeWidth: 1.5),
+                  )
+                else
+                  Text(
+                    timeStr,
+                    style: const TextStyle(
+                      color: Colors.white38,
+                      fontSize: 11,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          // Response content
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: _buildMarkdownContent(response),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Build markdown content for a single response
+  Widget _buildMarkdownContent(String text) {
+    if (text.isEmpty) {
+      return const Text(
+        'No response',
+        style: TextStyle(
+          color: Colors.white54,
+          fontStyle: FontStyle.italic,
+        ),
+      );
+    }
+
+    try {
+      return Markdown(
+      data: text,
+      selectable: true,
+      softLineBreak: true,
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      styleSheet: MarkdownStyleSheet(
+        p: const TextStyle(
+          color: Colors.white,
+          fontSize: 14,
+          height: 1.5,
+        ),
+        h1: const TextStyle(
+          color: Colors.white,
+          fontSize: 24,
+          fontWeight: FontWeight.bold,
+        ),
+        h2: const TextStyle(
+          color: Colors.white,
+          fontSize: 20,
+          fontWeight: FontWeight.bold,
+        ),
+        h3: const TextStyle(
+          color: Colors.white,
+          fontSize: 18,
+          fontWeight: FontWeight.bold,
+        ),
+        h4: const TextStyle(
+          color: Colors.white,
+          fontSize: 16,
+          fontWeight: FontWeight.bold,
+        ),
+        strong: const TextStyle(
+          color: Colors.white,
+          fontWeight: FontWeight.bold,
+        ),
+        em: const TextStyle(
+          color: Colors.white,
+          fontStyle: FontStyle.italic,
+        ),
+        code: TextStyle(
+          color: Colors.lightBlueAccent,
+          backgroundColor: Colors.black.withValues(alpha: 0.3),
+          fontFamily: 'monospace',
+          fontSize: 13,
+        ),
+        codeblockDecoration: BoxDecoration(
+          color: const Color(0xFF1E1E1E),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.white24),
+        ),
+        codeblockPadding: const EdgeInsets.all(12),
+        blockquote: const TextStyle(
+          color: Colors.white70,
+          fontStyle: FontStyle.italic,
+        ),
+        blockquoteDecoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.05),
+          border: const Border(
+            left: BorderSide(color: Colors.white38, width: 4),
+          ),
+        ),
+        listBullet: const TextStyle(color: Colors.white),
+        tableHead: const TextStyle(
+          color: Colors.white,
+          fontWeight: FontWeight.bold,
+        ),
+        tableBody: const TextStyle(color: Colors.white),
+        tableBorder: TableBorder.all(color: Colors.white30),
+        horizontalRuleDecoration: const BoxDecoration(
+          border: Border(
+            top: BorderSide(color: Colors.white30, width: 1),
+          ),
+        ),
+        a: const TextStyle(
+          color: Colors.lightBlueAccent,
+          decoration: TextDecoration.underline,
+        ),
+      ),
+      builders: {
+        'code': _CodeBlockBuilder(),
+      },
+    );
+    } catch (e) {
+      // Fallback to plain text if markdown parsing fails
+      return SelectableText(
+        text,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 14,
+          height: 1.5,
+        ),
+      );
+    }
   }
 
   Widget _buildCaptureTargetPickerPill() {
@@ -2113,10 +2493,26 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
           onWhatShouldISayPressed: !canSuggestReply || speechProvider.isAiLoading
               ? null
               : () async {
-                  final raw = b.text.trim();
-                  final snippet = raw.length > 500 ? '${raw.substring(0, 500)}…' : raw;
+                  // Find the latest question up to and including this bubble
+                  final latestQuestion = _findLatestQuestion(bubbles, index, 500);
+                  
+                  String displayText;
+                  String promptText;
+                  
+                  if (latestQuestion != null) {
+                    // Found a question - answer it
+                    displayText = latestQuestion;
+                    promptText = 'Answer this question: $latestQuestion';
+                  } else {
+                    // No question found, just respond to the bubble text
+                    final bubbleText = b.text.trim();
+                    displayText = bubbleText.length > 300 ? '${bubbleText.substring(0, 300)}...' : bubbleText;
+                    promptText = 'What should I say in response to: "$displayText"';
+                  }
+                  
                   await _askAiWithPrompt(
-                    'What should I say in response to this?\n\nSYSTEM: $snippet',
+                    promptText,
+                    displayQuestion: displayText,
                   );
                 },
         );
@@ -2604,33 +3000,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(color: Colors.white.withValues(alpha: 0.5)),
                   ),
-                  child: TextField(
-                    controller: _aiResponseController,
-                    readOnly: true,
-                    minLines: null,
-                    maxLines: null,
-                    expands: true,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      shadows: [
-                        Shadow(
-                          color: Colors.black,
-                          blurRadius: 4,
-                          offset: Offset(1, 1),
-                        ),
-                        Shadow(
-                          color: Colors.black,
-                          blurRadius: 6,
-                          offset: Offset(-1, -1),
-                        ),
-                      ],
-                    ),
-                    decoration: const InputDecoration(
-                      border: InputBorder.none,
-                      isCollapsed: true,
-                      contentPadding: EdgeInsets.zero,
-                    ),
-                  ),
+                  child: _buildAiResponseContent(speechProvider.aiResponse, meetingProvider, speechProvider),
                 ),
                 if (_showAiControls)
                   Align(
@@ -2793,33 +3163,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(color: Colors.white.withValues(alpha: 0.5)),
                 ),
-                child: TextField(
-                  controller: _aiResponseController,
-                  readOnly: true,
-                  minLines: null,
-                  maxLines: null,
-                  expands: true,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    shadows: [
-                      Shadow(
-                        color: Colors.black,
-                        blurRadius: 4,
-                        offset: Offset(1, 1),
-                      ),
-                      Shadow(
-                        color: Colors.black,
-                        blurRadius: 6,
-                        offset: Offset(-1, -1),
-                      ),
-                    ],
-                  ),
-                  decoration: const InputDecoration(
-                    border: InputBorder.none,
-                    isCollapsed: true,
-                    contentPadding: EdgeInsets.zero,
-                  ),
-                ),
+                child: _buildAiResponseContent(speechProvider.aiResponse, meetingProvider, speechProvider),
               ),
               if (_showAiControls)
                 Align(
@@ -2929,16 +3273,6 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     return Consumer2<SpeechToTextProvider, MeetingProvider>(
       builder: (context, speechProvider, meetingProvider, child) {
         _maybeAutoScroll(speechProvider);
-
-        // Never show error text inside the AI response field.
-        // Errors are surfaced via SnackBar instead.
-        final aiText = speechProvider.aiResponse;
-        if (_aiResponseController.text != aiText) {
-          _aiResponseController.text = aiText;
-          _aiResponseController.selection = TextSelection.collapsed(
-            offset: _aiResponseController.text.length,
-          );
-        }
 
         final rawErr = speechProvider.aiErrorMessage.trim();
         if (rawErr.isNotEmpty && rawErr != _lastAiErrorShown) {
@@ -5563,13 +5897,14 @@ class _ScreenshotToolOverlay extends StatefulWidget {
 
 class _ScreenshotToolOverlayState extends State<_ScreenshotToolOverlay> {
   static const MethodChannel _windowChannel = MethodChannel('com.finalround/window');
+  final FocusNode _focusNode = FocusNode();
   Offset? _startPoint;
   Offset? _currentPoint;
   bool _isDragging = false;
 
   @override
   void dispose() {
-    // Dispose the screenshot image when the overlay is removed
+    _focusNode.dispose();
     widget.screenshot.dispose();
     super.dispose();
   }
@@ -5664,29 +5999,37 @@ class _ScreenshotToolOverlayState extends State<_ScreenshotToolOverlay> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.transparent,
-      body: Stack(
-        children: [
-          // Screenshot background (fullscreen)
-          Positioned.fill(
-            child: RawImage(
-              image: widget.screenshot,
-              fit: BoxFit.fill,
-            ),
-          ),
-          // Gesture detector for selection
-          Positioned.fill(
-            child: GestureDetector(
-              onPanStart: _onPanStart,
-              onPanUpdate: _onPanUpdate,
-              onPanEnd: _onPanEnd,
-              child: MouseRegion(
-                cursor: SystemMouseCursors.precise,
-                child: Container(color: Colors.transparent),
+    return KeyboardListener(
+      focusNode: _focusNode,
+      autofocus: true,
+      onKeyEvent: (event) {
+        if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.escape) {
+          _cancel();
+        }
+      },
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: Stack(
+          children: [
+            // Screenshot background (fullscreen)
+            Positioned.fill(
+              child: RawImage(
+                image: widget.screenshot,
+                fit: BoxFit.fill,
               ),
             ),
-          ),
+            // Gesture detector for selection
+            Positioned.fill(
+              child: GestureDetector(
+                onPanStart: _onPanStart,
+                onPanUpdate: _onPanUpdate,
+                onPanEnd: _onPanEnd,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.precise,
+                  child: Container(color: Colors.transparent),
+                ),
+              ),
+            ),
           // Dimming mask outside selection
           if (_selectionRect != null)
             ..._buildDimmingMask(_selectionRect!, MediaQuery.of(context).size),
@@ -5761,6 +6104,7 @@ class _ScreenshotToolOverlayState extends State<_ScreenshotToolOverlay> {
           ),
         ],
       ),
+      ),
     );
   }
 
@@ -5805,5 +6149,102 @@ class _ScreenshotToolOverlayState extends State<_ScreenshotToolOverlay> {
           child: Container(color: dimColor),
         ),
     ];
+  }
+}
+
+/// Custom code block builder with syntax highlighting
+class _CodeBlockBuilder extends MarkdownElementBuilder {
+  @override
+  Widget? visitElementAfter(element, TextStyle? preferredStyle) {
+    final code = element.textContent;
+    
+    // Try to detect language from code fence
+    String? language;
+    try {
+      final classAttr = element.attributes['class'] ?? '';
+      final match = RegExp(r'language-(\w+)').firstMatch(classAttr);
+      if (match != null) {
+        language = match.group(1);
+      }
+    } catch (_) {
+      // Ignore errors in language detection
+    }
+    
+    // Try to highlight with detected language, fall back to plain text on any error
+    List<TextSpan> spans;
+    try {
+      if (language != null && language.isNotEmpty) {
+        final result = highlight.parse(code, language: language);
+        spans = _convertNodes(result.nodes ?? []);
+      } else {
+        // Don't auto-detect - just use plain text to avoid parsing errors
+        spans = [TextSpan(text: code, style: const TextStyle(color: Colors.white))];
+      }
+    } catch (e) {
+      // On any error, fall back to plain text
+      spans = [TextSpan(text: code, style: const TextStyle(color: Colors.white))];
+    }
+    
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF282C34),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.white24),
+      ),
+      child: Stack(
+        children: [
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: SelectableText.rich(
+              TextSpan(
+                style: const TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 13,
+                  height: 1.5,
+                ),
+                children: spans,
+              ),
+            ),
+          ),
+          Positioned(
+            top: 0,
+            right: 0,
+            child: IconButton(
+              icon: const Icon(Icons.copy, size: 16, color: Colors.white54),
+              tooltip: 'Copy code',
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: code));
+              },
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<TextSpan> _convertNodes(List<dynamic> nodes) {
+    final spans = <TextSpan>[];
+    for (final node in nodes) {
+      if (node is String) {
+        spans.add(TextSpan(text: node, style: const TextStyle(color: Colors.white)));
+      } else if (node.className != null) {
+        final style = atomOneDarkTheme[node.className] ?? const TextStyle(color: Colors.white);
+        if (node.children != null) {
+          spans.addAll(_convertNodes(node.children));
+        } else {
+          spans.add(TextSpan(text: node.value, style: style));
+        }
+      } else if (node.children != null) {
+        spans.addAll(_convertNodes(node.children));
+      } else {
+        spans.add(TextSpan(text: node.value ?? '', style: const TextStyle(color: Colors.white)));
+      }
+    }
+    return spans;
   }
 }

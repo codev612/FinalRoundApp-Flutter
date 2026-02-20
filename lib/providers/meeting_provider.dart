@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/meeting_session.dart';
 import '../models/meeting_mode.dart';
 import '../models/transcript_bubble.dart';
+import '../models/ai_response_entry.dart';
 import '../services/meeting_storage_service.dart';
 import '../services/ai_service.dart';
 import '../services/meeting_mode_service.dart';
@@ -261,13 +262,22 @@ class MeetingProvider extends ChangeNotifier {
       _errorMessage = '';
       notifyListeners();
 
+      // Preserve local AI responses before save (server may not return them)
+      final localAiResponses = _currentSession!.aiResponses;
+      
       final updated = _currentSession!.copyWith(
         title: title ?? _currentSession!.title,
         updatedAt: DateTime.now(),
       );
       // Save session and get the updated session with server-generated ID
       final savedSession = await _storage.saveSession(updated);
-      _currentSession = savedSession;
+      
+      // Preserve local AI responses if server returned empty/missing
+      final mergedSession = savedSession.aiResponses.isEmpty && localAiResponses.isNotEmpty
+          ? savedSession.copyWith(aiResponses: localAiResponses)
+          : savedSession;
+      _currentSession = mergedSession;
+      
       // Save the session ID (now with MongoDB ObjectId)
       if (savedSession.id != null) {
         await _saveCurrentSessionId(savedSession.id!);
@@ -367,6 +377,73 @@ class MeetingProvider extends ChangeNotifier {
     }
   }
 
+  /// Add an AI response to the current session's history
+  void addAiResponseToSession(AiResponseEntry response) {
+    if (_currentSession == null || _isDisposed) return;
+
+    try {
+      final updatedResponses = [response, ..._currentSession!.aiResponses];
+      // Limit to 50 entries
+      final limitedResponses = updatedResponses.length > 50 
+          ? updatedResponses.sublist(0, 50) 
+          : updatedResponses;
+      
+      _currentSession = _currentSession!.copyWith(
+        aiResponses: limitedResponses,
+        updatedAt: DateTime.now(),
+      );
+      
+      if (!_isDisposed) {
+        try {
+          notifyListeners();
+        } catch (e) {
+          print('[MeetingProvider] Error in notifyListeners: $e');
+        }
+      }
+      
+      // Auto-save session
+      if (!_isDisposed) {
+        try {
+          _autoSaveSession();
+        } catch (e) {
+          print('[MeetingProvider] Error scheduling auto-save: $e');
+        }
+      }
+    } catch (e) {
+      print('[MeetingProvider] Error adding AI response to session: $e');
+    }
+  }
+
+  /// Clear AI response history for the current session
+  void clearSessionAiHistory() {
+    if (_currentSession == null || _isDisposed) return;
+
+    try {
+      _currentSession = _currentSession!.copyWith(
+        aiResponses: [],
+        updatedAt: DateTime.now(),
+      );
+      if (!_isDisposed) {
+        try {
+          notifyListeners();
+        } catch (e) {
+          print('[MeetingProvider] Error in notifyListeners: $e');
+        }
+      }
+      
+      // Auto-save session
+      if (!_isDisposed) {
+        try {
+          _autoSaveSession();
+        } catch (e) {
+          print('[MeetingProvider] Error scheduling auto-save: $e');
+        }
+      }
+    } catch (e) {
+      print('[MeetingProvider] Error clearing AI history: $e');
+    }
+  }
+
   Timer? _autoSaveTimer;
   bool _isSaving = false; // Track if save is in progress
   
@@ -390,6 +467,9 @@ class MeetingProvider extends ChangeNotifier {
     if (_currentSession != null && _storage.authToken != null && _storage.authToken!.isNotEmpty) {
       _isSaving = true;
       try {
+        // Preserve local AI responses before save (server may not return them)
+        final localAiResponses = _currentSession!.aiResponses;
+        
         final savedSession = await _storage.saveSession(_currentSession!);
         
         // Check if still valid after async operation
@@ -397,7 +477,11 @@ class MeetingProvider extends ChangeNotifier {
         
         if (savedSession.id != null && savedSession.id != _currentSession!.id) {
           // Session ID changed (got MongoDB ObjectId), update it
-          _currentSession = savedSession;
+          // Preserve local AI responses if server returned empty/missing
+          final mergedSession = savedSession.aiResponses.isEmpty && localAiResponses.isNotEmpty
+              ? savedSession.copyWith(aiResponses: localAiResponses)
+              : savedSession;
+          _currentSession = mergedSession;
           await _saveCurrentSessionId(savedSession.id!);
           if (!_isDisposed) {
             try {
@@ -407,7 +491,11 @@ class MeetingProvider extends ChangeNotifier {
             }
           }
         } else {
-          _currentSession = savedSession;
+          // Preserve local AI responses if server returned empty/missing
+          final mergedSession = savedSession.aiResponses.isEmpty && localAiResponses.isNotEmpty
+              ? savedSession.copyWith(aiResponses: localAiResponses)
+              : savedSession;
+          _currentSession = mergedSession;
         }
       } catch (e) {
         // Silently fail auto-save to avoid disrupting user experience
