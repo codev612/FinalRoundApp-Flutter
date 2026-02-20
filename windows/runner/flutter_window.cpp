@@ -862,6 +862,106 @@ bool FlutterWindow::OnCreate() {
 
           CloseClipboard();
           result->Success(flutter::EncodableValue());
+        } else if (call.method_name().compare("hideWindow") == 0) {
+          HWND hwnd = GetHandle();
+          if (hwnd) {
+            ShowWindow(hwnd, SW_HIDE);
+            result->Success(flutter::EncodableValue(true));
+          } else {
+            result->Error("NO_WINDOW", "Window handle not available");
+          }
+        } else if (call.method_name().compare("showWindow") == 0) {
+          HWND hwnd = GetHandle();
+          if (hwnd) {
+            ShowWindow(hwnd, SW_SHOW);
+            SetForegroundWindow(hwnd);
+            result->Success(flutter::EncodableValue(true));
+          } else {
+            result->Error("NO_WINDOW", "Window handle not available");
+          }
+        } else if (call.method_name().compare("copyImageToClipboard") == 0) {
+          // Copy BGRA image data to Windows clipboard as CF_DIB
+          if (!call.arguments() || !std::holds_alternative<flutter::EncodableMap>(*call.arguments())) {
+            result->Error("BAD_ARGS", "Expected map with width, height, bytes");
+            return;
+          }
+          const auto& args = std::get<flutter::EncodableMap>(*call.arguments());
+          
+          int width = 0, height = 0;
+          std::vector<uint8_t> bytes;
+          
+          auto itW = args.find(flutter::EncodableValue("width"));
+          auto itH = args.find(flutter::EncodableValue("height"));
+          auto itB = args.find(flutter::EncodableValue("bytes"));
+          
+          if (itW != args.end()) {
+            if (std::holds_alternative<int32_t>(itW->second)) width = std::get<int32_t>(itW->second);
+            else if (std::holds_alternative<int64_t>(itW->second)) width = static_cast<int>(std::get<int64_t>(itW->second));
+          }
+          if (itH != args.end()) {
+            if (std::holds_alternative<int32_t>(itH->second)) height = std::get<int32_t>(itH->second);
+            else if (std::holds_alternative<int64_t>(itH->second)) height = static_cast<int>(std::get<int64_t>(itH->second));
+          }
+          if (itB != args.end() && std::holds_alternative<std::vector<uint8_t>>(itB->second)) {
+            bytes = std::get<std::vector<uint8_t>>(itB->second);
+          }
+          
+          if (width <= 0 || height <= 0 || bytes.empty()) {
+            result->Error("BAD_ARGS", "Invalid width, height, or bytes");
+            return;
+          }
+          
+          // Create DIB for clipboard (32-bit BGRA)
+          int stride = width * 4;
+          size_t dataSize = sizeof(BITMAPINFOHEADER) + (stride * height);
+          
+          HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, dataSize);
+          if (!hMem) {
+            result->Error("ALLOC_FAILED", "Failed to allocate memory for clipboard");
+            return;
+          }
+          
+          BYTE* pMem = static_cast<BYTE*>(GlobalLock(hMem));
+          if (!pMem) {
+            GlobalFree(hMem);
+            result->Error("LOCK_FAILED", "Failed to lock memory");
+            return;
+          }
+          
+          // Fill BITMAPINFOHEADER (negative height for top-down DIB)
+          BITMAPINFOHEADER* bih = reinterpret_cast<BITMAPINFOHEADER*>(pMem);
+          ZeroMemory(bih, sizeof(BITMAPINFOHEADER));
+          bih->biSize = sizeof(BITMAPINFOHEADER);
+          bih->biWidth = width;
+          bih->biHeight = -height; // negative = top-down
+          bih->biPlanes = 1;
+          bih->biBitCount = 32;
+          bih->biCompression = BI_RGB;
+          bih->biSizeImage = stride * height;
+          
+          // Copy BGRA data
+          BYTE* pPixels = pMem + sizeof(BITMAPINFOHEADER);
+          memcpy(pPixels, bytes.data(), bytes.size());
+          
+          GlobalUnlock(hMem);
+          
+          if (!OpenClipboard(nullptr)) {
+            GlobalFree(hMem);
+            result->Error("CLIPBOARD_ERROR", "Failed to open clipboard");
+            return;
+          }
+          
+          EmptyClipboard();
+          HANDLE hData = SetClipboardData(CF_DIB, hMem);
+          CloseClipboard();
+          
+          if (!hData) {
+            GlobalFree(hMem);
+            result->Error("CLIPBOARD_ERROR", "Failed to set clipboard data");
+            return;
+          }
+          
+          result->Success(flutter::EncodableValue(true));
         } else if (call.method_name().compare("getVirtualScreenBounds") == 0) {
           // Return virtual screen bounds (covers all monitors)
           int x = GetSystemMetrics(SM_XVIRTUALSCREEN);

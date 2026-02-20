@@ -599,6 +599,117 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     return region;
   }
 
+  /// Launch the built-in screenshot tool (like Windows Snipping Tool)
+  Future<void> _launchScreenshotTool() async {
+    if (!mounted || !Platform.isWindows) return;
+
+    try {
+      // 1. Make our window undetectable first (won't appear in screenshot)
+      await _windowChannel.invokeMethod<void>('setUndetectable', true);
+      
+      // 2. Get screen bounds
+      final screenBounds = await _windowChannel.invokeMethod<dynamic>('getVirtualScreenBounds');
+      if (screenBounds is! Map) {
+        await _windowChannel.invokeMethod<void>('setUndetectable', false);
+        return;
+      }
+      
+      final screenX = (screenBounds['x'] as num?)?.toInt() ?? 0;
+      final screenY = (screenBounds['y'] as num?)?.toInt() ?? 0;
+      final screenWidth = (screenBounds['width'] as num?)?.toInt() ?? 0;
+      final screenHeight = (screenBounds['height'] as num?)?.toInt() ?? 0;
+      
+      if (screenWidth <= 0 || screenHeight <= 0) {
+        await _windowChannel.invokeMethod<void>('setUndetectable', false);
+        return;
+      }
+      
+      // 3. Capture screenshot (our window won't appear because it's undetectable)
+      final screenshotPixels = await _windowChannel.invokeMethod<dynamic>(
+        'captureRectPixels',
+        <String, dynamic>{
+          'x': screenX,
+          'y': screenY,
+          'width': screenWidth,
+          'height': screenHeight,
+        },
+      );
+      
+      if (screenshotPixels is! Map) {
+        await _windowChannel.invokeMethod<void>('setUndetectable', false);
+        return;
+      }
+      
+      final imgWidth = (screenshotPixels['width'] as num?)?.toInt() ?? 0;
+      final imgHeight = (screenshotPixels['height'] as num?)?.toInt() ?? 0;
+      final imgBytes = screenshotPixels['bytes'];
+      
+      if (imgWidth <= 0 || imgHeight <= 0 || imgBytes is! Uint8List) {
+        await _windowChannel.invokeMethod<void>('setUndetectable', false);
+        return;
+      }
+      
+      // 4. Decode the screenshot while still in normal mode
+      final screenshot = await _decodeBgraToImage(imgBytes, imgWidth, imgHeight);
+      
+      if (!mounted) {
+        screenshot.dispose();
+        await _windowChannel.invokeMethod<void>('setUndetectable', false);
+        return;
+      }
+      
+      // 5. Enter fullscreen mode for region selection (instant transition)
+      await _windowChannel.invokeMethod<void>('enterRegionSelectorMode');
+      
+      // 6. Show fullscreen screenshot selector overlay (no transition for instant feel)
+      // Note: The overlay will dispose the screenshot when it's removed from the tree
+      final selectedRegion = await Navigator.of(context).push<Rect>(
+        PageRouteBuilder<Rect>(
+          opaque: false,
+          barrierColor: Colors.transparent,
+          pageBuilder: (context, animation, secondaryAnimation) => _ScreenshotToolOverlay(
+            screenshot: screenshot,
+            screenshotBytes: imgBytes,
+            screenOffsetX: screenX,
+            screenOffsetY: screenY,
+            screenWidth: screenWidth,
+            screenHeight: screenHeight,
+          ),
+          transitionDuration: Duration.zero,
+          reverseTransitionDuration: Duration.zero,
+        ),
+      );
+      
+      // 7. Exit region selector mode and restore window
+      await _windowChannel.invokeMethod<void>('exitRegionSelectorMode');
+      
+      // 8. If a region was selected, it's already been copied to clipboard by the overlay
+      if (selectedRegion != null && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Screenshot copied to clipboard'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      // Make sure we restore the window on any error
+      try {
+        await _windowChannel.invokeMethod<void>('exitRegionSelectorMode');
+        await _windowChannel.invokeMethod<void>('setUndetectable', false);
+      } catch (_) {}
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Screenshot failed: $e'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+  }
+
   Future<void> _loadAutoAskUseScreen() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -2341,6 +2452,13 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                               icon: const Icon(Icons.save),
                               style: dockButtonStyle,
                             ),
+                            if (Platform.isWindows)
+                              IconButton.outlined(
+                                onPressed: _launchScreenshotTool,
+                                tooltip: 'Screenshot (Ctrl+Shift+S)',
+                                icon: const Icon(Icons.screenshot_outlined),
+                                style: dockButtonStyle,
+                              ),
                           ],
                         ),
                       ),
@@ -2861,6 +2979,11 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
         if (saveSession != null) shortcuts[saveSession] = const _SaveSessionIntent();
         if (exportSession != null) shortcuts[exportSession] = const _ExportIntent();
         if (markMoment != null) shortcuts[markMoment] = const _MarkIntent();
+        
+        // Screenshot shortcut (Ctrl+Shift+S) - Windows only
+        if (Platform.isWindows) {
+          shortcuts[const SingleActivator(LogicalKeyboardKey.keyS, control: true, shift: true)] = const _ScreenshotIntent();
+        }
 
         return Shortcuts(
           shortcuts: shortcuts,
@@ -2971,6 +3094,12 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
               _MarkIntent: CallbackAction<_MarkIntent>(
                 onInvoke: (_) {
                   _markMoment();
+                  return null;
+                },
+              ),
+              _ScreenshotIntent: CallbackAction<_ScreenshotIntent>(
+                onInvoke: (_) {
+                  if (Platform.isWindows) _launchScreenshotTool();
                   return null;
                 },
               ),
@@ -4001,6 +4130,10 @@ class _AskAiIntent extends Intent {
 
 class _SaveSessionIntent extends Intent {
   const _SaveSessionIntent();
+}
+
+class _ScreenshotIntent extends Intent {
+  const _ScreenshotIntent();
 }
 
 // Animated badge widget for showing session status
@@ -5403,5 +5536,274 @@ class _AskAiDialogState extends State<_AskAiDialog> {
         ),
       ],
     );
+  }
+}
+
+/// Fullscreen screenshot tool overlay (like Windows Snipping Tool)
+class _ScreenshotToolOverlay extends StatefulWidget {
+  final ui.Image screenshot;
+  final Uint8List screenshotBytes;
+  final int screenOffsetX;
+  final int screenOffsetY;
+  final int screenWidth;
+  final int screenHeight;
+
+  const _ScreenshotToolOverlay({
+    required this.screenshot,
+    required this.screenshotBytes,
+    required this.screenOffsetX,
+    required this.screenOffsetY,
+    required this.screenWidth,
+    required this.screenHeight,
+  });
+
+  @override
+  State<_ScreenshotToolOverlay> createState() => _ScreenshotToolOverlayState();
+}
+
+class _ScreenshotToolOverlayState extends State<_ScreenshotToolOverlay> {
+  static const MethodChannel _windowChannel = MethodChannel('com.finalround/window');
+  Offset? _startPoint;
+  Offset? _currentPoint;
+  bool _isDragging = false;
+
+  @override
+  void dispose() {
+    // Dispose the screenshot image when the overlay is removed
+    widget.screenshot.dispose();
+    super.dispose();
+  }
+
+  Rect? get _selectionRect {
+    if (_startPoint == null || _currentPoint == null) return null;
+    return Rect.fromPoints(_startPoint!, _currentPoint!);
+  }
+
+  void _onPanStart(DragStartDetails details) {
+    setState(() {
+      _startPoint = details.localPosition;
+      _currentPoint = details.localPosition;
+      _isDragging = true;
+    });
+  }
+
+  void _onPanUpdate(DragUpdateDetails details) {
+    setState(() {
+      _currentPoint = details.localPosition;
+    });
+  }
+
+  void _onPanEnd(DragEndDetails details) async {
+    final rect = _selectionRect;
+    if (rect == null || rect.width < 10 || rect.height < 10) {
+      setState(() {
+        _startPoint = null;
+        _currentPoint = null;
+        _isDragging = false;
+      });
+      return;
+    }
+
+    // Calculate the actual screen coordinates
+    final screenSize = MediaQuery.of(context).size;
+    final scaleX = widget.screenWidth / screenSize.width;
+    final scaleY = widget.screenHeight / screenSize.height;
+
+    final actualX = (rect.left * scaleX).round();
+    final actualY = (rect.top * scaleY).round();
+    final actualWidth = (rect.width * scaleX).round();
+    final actualHeight = (rect.height * scaleY).round();
+
+    // Capture the selected region from the original screenshot bytes
+    await _captureAndCopyRegion(actualX, actualY, actualWidth, actualHeight);
+
+    if (mounted) {
+      Navigator.of(context).pop(rect);
+    }
+  }
+
+  Future<void> _captureAndCopyRegion(int x, int y, int w, int h) async {
+    // Extract the region from the screenshot bytes (BGRA format)
+    final stride = widget.screenWidth * 4;
+    final regionBytes = <int>[];
+
+    for (int row = 0; row < h; row++) {
+      final srcY = y + row;
+      if (srcY < 0 || srcY >= widget.screenHeight) continue;
+      
+      final srcRowStart = srcY * stride;
+      for (int col = 0; col < w; col++) {
+        final srcX = x + col;
+        if (srcX < 0 || srcX >= widget.screenWidth) continue;
+        
+        final srcIdx = srcRowStart + (srcX * 4);
+        if (srcIdx + 3 < widget.screenshotBytes.length) {
+          regionBytes.add(widget.screenshotBytes[srcIdx]);     // B
+          regionBytes.add(widget.screenshotBytes[srcIdx + 1]); // G
+          regionBytes.add(widget.screenshotBytes[srcIdx + 2]); // R
+          regionBytes.add(widget.screenshotBytes[srcIdx + 3]); // A
+        }
+      }
+    }
+
+    // Copy to clipboard
+    try {
+      await _windowChannel.invokeMethod<void>('copyImageToClipboard', {
+        'width': w,
+        'height': h,
+        'bytes': Uint8List.fromList(regionBytes),
+      });
+    } catch (e) {
+      print('Failed to copy to clipboard: $e');
+    }
+  }
+
+  void _cancel() {
+    Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      body: Stack(
+        children: [
+          // Screenshot background (fullscreen)
+          Positioned.fill(
+            child: RawImage(
+              image: widget.screenshot,
+              fit: BoxFit.fill,
+            ),
+          ),
+          // Gesture detector for selection
+          Positioned.fill(
+            child: GestureDetector(
+              onPanStart: _onPanStart,
+              onPanUpdate: _onPanUpdate,
+              onPanEnd: _onPanEnd,
+              child: MouseRegion(
+                cursor: SystemMouseCursors.precise,
+                child: Container(color: Colors.transparent),
+              ),
+            ),
+          ),
+          // Dimming mask outside selection
+          if (_selectionRect != null)
+            ..._buildDimmingMask(_selectionRect!, MediaQuery.of(context).size),
+          // Selection rectangle
+          if (_selectionRect != null)
+            Positioned.fromRect(
+              rect: _selectionRect!,
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.blue, width: 2),
+                ),
+              ),
+            ),
+          // Floating toolbar
+          Positioned(
+            top: 16,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.8),
+                  borderRadius: BorderRadius.circular(8),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.4),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.screenshot, size: 18, color: Colors.white),
+                    const SizedBox(width: 8),
+                    const Text(
+                      'Drag to select',
+                      style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+                    ),
+                    if (_selectionRect != null && _selectionRect!.width >= 10 && _selectionRect!.height >= 10) ...[
+                      const SizedBox(width: 12),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.blue.withValues(alpha: 0.8),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          '${(_selectionRect!.width * widget.screenWidth / MediaQuery.of(context).size.width).round()} × ${(_selectionRect!.height * widget.screenHeight / MediaQuery.of(context).size.height).round()}',
+                          style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(width: 12),
+                    IconButton(
+                      onPressed: _cancel,
+                      icon: const Icon(Icons.close, size: 18),
+                      color: Colors.white,
+                      tooltip: 'Cancel (Esc)',
+                      style: IconButton.styleFrom(
+                        minimumSize: const Size(28, 28),
+                        maximumSize: const Size(28, 28),
+                        padding: EdgeInsets.zero,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> _buildDimmingMask(Rect selection, Size containerSize) {
+    const dimColor = Color(0x66000000);
+
+    return [
+      // Top
+      if (selection.top > 0)
+        Positioned(
+          left: 0,
+          top: 0,
+          right: 0,
+          height: selection.top,
+          child: Container(color: dimColor),
+        ),
+      // Bottom
+      if (selection.bottom < containerSize.height)
+        Positioned(
+          left: 0,
+          top: selection.bottom,
+          right: 0,
+          bottom: 0,
+          child: Container(color: dimColor),
+        ),
+      // Left
+      if (selection.left > 0)
+        Positioned(
+          left: 0,
+          top: selection.top,
+          width: selection.left,
+          height: selection.height,
+          child: Container(color: dimColor),
+        ),
+      // Right
+      if (selection.right < containerSize.width)
+        Positioned(
+          left: selection.right,
+          top: selection.top,
+          right: 0,
+          height: selection.height,
+          child: Container(color: dimColor),
+        ),
+    ];
   }
 }
