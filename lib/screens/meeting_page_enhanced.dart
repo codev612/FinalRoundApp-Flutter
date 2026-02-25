@@ -5657,24 +5657,42 @@ class _AskAiDialogState extends State<_AskAiDialog> {
   }
 
   Future<void> _handlePaste() async {
-    if (_attachments.length >= _maxAttachments) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Maximum 10 attachments allowed')),
-        );
-      }
-      return;
-    }
-    
     try {
+      // First try to paste text from clipboard
+      final clipboardData = await Clipboard.getData(Clipboard.kTextPlain);
+      final pastedText = clipboardData?.text?.trim();
+      if (pastedText != null && pastedText.isNotEmpty) {
+        final c = widget.controller;
+        final start = c.selection.start.clamp(0, c.text.length);
+        final end = c.selection.end.clamp(0, c.text.length);
+        final newText = c.text.replaceRange(start, end, pastedText);
+        c.text = newText;
+        c.selection = TextSelection.collapsed(offset: start + pastedText.length);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Text pasted'), duration: Duration(seconds: 1)),
+          );
+        }
+        return;
+      }
+
+      // No text: try to paste image (Windows)
+      if (_attachments.length >= _maxAttachments) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Maximum 10 attachments allowed')),
+          );
+        }
+        return;
+      }
       if (!Platform.isWindows) return;
-      
+
       final result = await _windowChannel.invokeMethod<dynamic>('getClipboardImage');
       if (result is Map) {
         final bytes = result['bytes'];
         final width = (result['width'] as num?)?.toInt() ?? 0;
         final height = (result['height'] as num?)?.toInt() ?? 0;
-        
+
         if (bytes is Uint8List && bytes.isNotEmpty && width > 0 && height > 0) {
           final completer = Completer<ui.Image>();
           ui.decodeImageFromPixels(
@@ -5684,18 +5702,59 @@ class _AskAiDialogState extends State<_AskAiDialog> {
           final image = await completer.future;
           final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
           image.dispose();
-          
+
           if (byteData != null) {
             final pngBytes = byteData.buffer.asUint8List();
             final name = 'pasted_${_attachments.length + 1}.png';
             setState(() {
               _attachments.add(_AttachedFile(name: name, bytes: pngBytes));
             });
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Image pasted'), duration: Duration(seconds: 1)),
+              );
+            }
           }
         }
       }
     } catch (e) {
       debugPrint('Paste error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Paste failed: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _handleCopy() async {
+    final c = widget.controller;
+    final start = c.selection.start.clamp(0, c.text.length);
+    final end = c.selection.end.clamp(0, c.text.length);
+    final text = start < end
+        ? c.text.substring(start, end)
+        : c.text.trim();
+    if (text.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Nothing to copy'), duration: Duration(seconds: 1)),
+        );
+      }
+      return;
+    }
+    try {
+      await Clipboard.setData(ClipboardData(text: text));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Copied to clipboard'), duration: Duration(seconds: 1)),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Copy failed: $e')),
+        );
+      }
     }
   }
 
@@ -5753,9 +5812,15 @@ class _AskAiDialogState extends State<_AskAiDialog> {
             visualDensity: VisualDensity.compact,
           ),
           IconButton(
+            onPressed: _handleCopy,
+            icon: const Icon(Icons.copy),
+            tooltip: 'Copy text (Ctrl+C)',
+            visualDensity: VisualDensity.compact,
+          ),
+          IconButton(
             onPressed: _attachments.length >= _maxAttachments ? null : _handlePaste,
             icon: const Icon(Icons.content_paste),
-            tooltip: 'Paste image (Ctrl+V)',
+            tooltip: 'Paste text or image (Ctrl+V)',
             visualDensity: VisualDensity.compact,
           ),
         ],
@@ -5788,11 +5853,15 @@ class _AskAiDialogState extends State<_AskAiDialog> {
             // Text input
             Focus(
               onKeyEvent: (node, event) {
-                if (event is KeyDownEvent &&
-                    event.logicalKey == LogicalKeyboardKey.keyV &&
-                    (HardwareKeyboard.instance.isControlPressed || 
-                     HardwareKeyboard.instance.isMetaPressed)) {
+                if (event is! KeyDownEvent) return KeyEventResult.ignored;
+                final isMod = HardwareKeyboard.instance.isControlPressed ||
+                    HardwareKeyboard.instance.isMetaPressed;
+                if (event.logicalKey == LogicalKeyboardKey.keyV && isMod) {
                   _handlePaste();
+                  return KeyEventResult.handled;
+                }
+                if (event.logicalKey == LogicalKeyboardKey.keyC && isMod) {
+                  _handleCopy();
                   return KeyEventResult.handled;
                 }
                 return KeyEventResult.ignored;
@@ -5808,7 +5877,7 @@ class _AskAiDialogState extends State<_AskAiDialog> {
                       : 'Type a question or leave empty to ask about the conversation...',
                   border: const OutlineInputBorder(),
                   alignLabelWithHint: true,
-                  helperText: 'Tip: Paste images with Ctrl+V or drag & drop',
+                  helperText: 'Tip: Copy/paste text with Ctrl+C / Ctrl+V; paste images with Ctrl+V or drag & drop',
                   helperStyle: TextStyle(color: cs.onSurface.withValues(alpha: 0.5)),
                 ),
                 textInputAction: TextInputAction.newline,
