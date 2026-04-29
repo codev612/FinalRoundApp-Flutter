@@ -2493,26 +2493,18 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
           onWhatShouldISayPressed: !canSuggestReply || speechProvider.isAiLoading
               ? null
               : () async {
-                  // Find the latest question up to and including this bubble
-                  final latestQuestion = _findLatestQuestion(bubbles, index, 500);
-                  
-                  String displayText;
-                  String promptText;
-                  
-                  if (latestQuestion != null) {
-                    // Found a question - answer it
-                    displayText = latestQuestion;
-                    promptText = 'Answer this question: $latestQuestion';
-                  } else {
-                    // No question found, just respond to the bubble text
-                    final bubbleText = b.text.trim();
-                    displayText = bubbleText.length > 300 ? '${bubbleText.substring(0, 300)}...' : bubbleText;
-                    promptText = 'What should I say in response to: "$displayText"';
-                  }
-                  
+                  // Gather the last 20 bubbles up to and including this one
+                  final start = (index - 19) < 0 ? 0 : (index - 19);
+                  final selectedBubbles = bubbles.sublist(start, index + 1);
+                  final contextText = selectedBubbles.map((bubble) {
+                    final speaker = bubble.source == TranscriptSource.mic ? 'Me' :
+                      bubble.source == TranscriptSource.system ? 'Other' : 'Unknown';
+                    return '$speaker: ${bubble.text.trim()}';
+                  }).where((t) => t.isNotEmpty).join('\n');
+                  final promptText = 'Given the following conversation, what should I say next?\n\n$contextText';
                   await _askAiWithPrompt(
                     promptText,
-                    displayQuestion: displayText,
+                    displayQuestion: contextText.length > 300 ? contextText.substring(0, 300) + '...' : contextText,
                   );
                 },
         );
