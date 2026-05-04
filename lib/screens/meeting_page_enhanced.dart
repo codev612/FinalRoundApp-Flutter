@@ -1926,6 +1926,34 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                   ),
                 ),
                 const SizedBox(width: 8),
+                // Copy button for AI response
+                Tooltip(
+                  message: 'Copy response',
+                  child: IconButton(
+                    icon: const Icon(Icons.content_copy, size: 16),
+                    color: Colors.white70,
+                    onPressed: response.trim().isEmpty
+                        ? null
+                        : () async {
+                            await Clipboard.setData(ClipboardData(text: response));
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('AI response copied')),
+                            );
+                          },
+                    style: IconButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      backgroundColor: Colors.black.withValues(alpha: 0.18),
+                      minimumSize: const Size(32, 32),
+                      padding: EdgeInsets.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(999),
+                        side: BorderSide(color: Colors.white.withValues(alpha: 0.18)),
+                      ),
+                    ),
+                  ),
+                ),
                 if (isStreaming)
                   const SizedBox(
                     width: 12,
