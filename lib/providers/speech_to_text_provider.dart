@@ -10,6 +10,7 @@ import '../services/windows_audio_service.dart';
 import '../services/ai_service.dart';
 import '../models/transcript_bubble.dart';
 import '../models/ai_response_entry.dart';
+import '../config/constants.dart';
 
 class SpeechToTextProvider extends ChangeNotifier {
   TranscriptionService? _transcriptionService;
@@ -56,6 +57,7 @@ class SpeechToTextProvider extends ChangeNotifier {
   bool _isDisposed = false;
   final List<TranscriptBubble> _bubbles = <TranscriptBubble>[];
   int? _openSystemBubbleIndex;
+  int? _openMicBubbleIndex;
   String _errorMessage = '';
   int _audioFrameCount = 0;
   
@@ -532,6 +534,24 @@ class SpeechToTextProvider extends ChangeNotifier {
     return idx;
   }
 
+  int? _getOpenMicBubbleIndex() {
+    final idx = _openMicBubbleIndex;
+    if (idx == null) return null;
+    if (idx < 0 || idx >= _bubbles.length) {
+      _openMicBubbleIndex = null;
+      return null;
+    }
+    if (_bubbles[idx].source != TranscriptSource.mic) {
+      _openMicBubbleIndex = null;
+      return null;
+    }
+    return idx;
+  }
+
+  void _updateOpenMicBubbleState({required int index, required String text}) {
+    _openMicBubbleIndex = _isSystemSentenceTerminated(text) ? null : index;
+  }
+
   void _updateOpenSystemBubbleState({required int index, required String text}) {
     _openSystemBubbleIndex = _isSystemSentenceTerminated(text) ? null : index;
   }
@@ -585,7 +605,7 @@ class SpeechToTextProvider extends ChangeNotifier {
       }
     }
 
-    // Keep appending system speech into the same in-progress bubble
+    // Keep appending system or mic speech into the same in-progress bubble
     // until sentence-ending punctuation is detected.
     if (source == TranscriptSource.system) {
       final openIndex = _getOpenSystemBubbleIndex();
@@ -614,6 +634,20 @@ class SpeechToTextProvider extends ChangeNotifier {
         return;
       }
     }
+    if (source == TranscriptSource.mic) {
+      final openIndex = _getOpenMicBubbleIndex();
+      if (openIndex != null) {
+        final previousText = _bubbles[openIndex].text;
+        final merged = _appendWithOverlap(previousText, trimmed);
+        _bubbles[openIndex] = _bubbles[openIndex].copyWith(
+          text: merged,
+          isDraft: false,
+          timestamp: DateTime.now(),
+        );
+        _updateOpenMicBubbleState(index: openIndex, text: merged);
+        return;
+      }
+    }
 
     // If the last bubble is from the same source, merge into it to reduce fragmentation.
     if (_bubbles.isNotEmpty && _bubbles.last.source == source) {
@@ -627,6 +661,9 @@ class SpeechToTextProvider extends ChangeNotifier {
         );
         if (source == TranscriptSource.system) {
           _updateOpenSystemBubbleState(index: _bubbles.length - 1, text: finalText);
+        }
+        if (source == TranscriptSource.mic) {
+          _updateOpenMicBubbleState(index: _bubbles.length - 1, text: finalText);
         }
         // Check if finalized text is a question from system source (others asking)
         if (source == TranscriptSource.system && 
@@ -664,6 +701,9 @@ class SpeechToTextProvider extends ChangeNotifier {
       if (source == TranscriptSource.system) {
         _updateOpenSystemBubbleState(index: _bubbles.length - 1, text: merged);
       }
+      if (source == TranscriptSource.mic) {
+        _updateOpenMicBubbleState(index: _bubbles.length - 1, text: merged);
+      }
       return;
     }
 
@@ -678,6 +718,9 @@ class SpeechToTextProvider extends ChangeNotifier {
     if (source == TranscriptSource.system) {
       _updateOpenSystemBubbleState(index: _bubbles.length - 1, text: trimmed);
     }
+    if (source == TranscriptSource.mic) {
+      _updateOpenMicBubbleState(index: _bubbles.length - 1, text: trimmed);
+    }
     
     // Resource optimization: Limit bubbles in memory to prevent excessive memory usage
     // Older bubbles are already saved to the session, so we can safely limit memory
@@ -690,6 +733,13 @@ class SpeechToTextProvider extends ChangeNotifier {
           _openSystemBubbleIndex = null;
         } else {
           _openSystemBubbleIndex = _openSystemBubbleIndex! - toRemove;
+        }
+      }
+      if (_openMicBubbleIndex != null) {
+        if (_openMicBubbleIndex! < toRemove) {
+          _openMicBubbleIndex = null;
+        } else {
+          _openMicBubbleIndex = _openMicBubbleIndex! - toRemove;
         }
       }
       print('[SpeechToTextProvider] Trimmed bubble history: removed $toRemove old bubbles (keeping last $_maxBubblesInMemory)');
@@ -726,6 +776,19 @@ class SpeechToTextProvider extends ChangeNotifier {
         return;
       }
     }
+    if (source == TranscriptSource.mic) {
+      final openIndex = _getOpenMicBubbleIndex();
+      if (openIndex != null) {
+        final merged = _appendWithOverlap(_bubbles[openIndex].text, trimmed);
+        _bubbles[openIndex] = _bubbles[openIndex].copyWith(
+          text: merged,
+          isDraft: true,
+          timestamp: DateTime.now(),
+        );
+        _openMicBubbleIndex = openIndex;
+        return;
+      }
+    }
 
     // Update existing draft bubble for this source if it is the most recent.
     if (_bubbles.isNotEmpty && _bubbles.last.source == source && _bubbles.last.isDraft) {
@@ -735,6 +798,9 @@ class SpeechToTextProvider extends ChangeNotifier {
       );
       if (source == TranscriptSource.system) {
         _openSystemBubbleIndex = _bubbles.length - 1;
+      }
+      if (source == TranscriptSource.mic) {
+        _openMicBubbleIndex = _bubbles.length - 1;
       }
       return;
     }
@@ -750,6 +816,9 @@ class SpeechToTextProvider extends ChangeNotifier {
     );
     if (source == TranscriptSource.system) {
       _openSystemBubbleIndex = _bubbles.length - 1;
+    }
+    if (source == TranscriptSource.mic) {
+      _openMicBubbleIndex = _bubbles.length - 1;
     }
   }
 
@@ -879,7 +948,7 @@ class SpeechToTextProvider extends ChangeNotifier {
     _aiService?.setAuthToken(token);
   }
 
-  List<Map<String, String>> _buildAiTurns({int maxTurns = 50}) {
+  List<Map<String, String>> _buildAiTurns({int maxTurns = kMaxAiTurns}) {
     final finals = _bubbles.where((b) => !b.isDraft).toList(growable: false);
     final recent = finals.length > maxTurns ? finals.sublist(finals.length - maxTurns) : finals;
 
