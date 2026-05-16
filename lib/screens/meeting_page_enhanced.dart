@@ -178,6 +178,8 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
   MeetingProvider? _meetingProvider;
   Timer? _recordingTimer;
   DateTime? _recordingStartedAt;
+  DateTime? _recordingRunStartedAt;
+  Duration _recordedElapsedBeforeCurrentRun = Duration.zero;
   bool _showMarkers = true;
   bool _autoAsk = false;
   bool _autoAskUseScreen = false;
@@ -274,20 +276,18 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
         if (isNewSession) {
           // It's a new session - clear any existing bubbles to start fresh
           _speechProvider!.clearTranscript();
-          // Reset recording start time for new session
-          _recordingStartedAt = null;
+          // Reset recording clock for new session
+          _resetRecordingClock();
         } else if (currentSession.bubbles.isNotEmpty) {
           // Session has bubbles and is a saved session - restore them (user clicked a saved session)
           _speechProvider!.restoreBubbles(currentSession.bubbles);
-          // Initialize recording start time from session (first bubble or createdAt)
-          _recordingStartedAt = currentSession.bubbles.isNotEmpty 
-              ? currentSession.bubbles.first.timestamp 
-              : currentSession.createdAt;
+          // Initialize recording clock from restored content
+          _hydrateRecordingClockFromSession(currentSession);
         } else {
           // Session exists but is empty (saved session with no bubbles) - clear bubbles
           _speechProvider!.clearTranscript();
-          // Reset recording start time
-          _recordingStartedAt = null;
+          // Reset recording clock
+          _resetRecordingClock();
         }
       } else {
         // No current session - try to restore last session, or create new
@@ -295,17 +295,15 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
         final restoredSession = _meetingProvider!.currentSession;
         if (restoredSession != null && restoredSession.bubbles.isNotEmpty) {
           _speechProvider!.restoreBubbles(restoredSession.bubbles);
-          // Initialize recording start time from restored session
-          _recordingStartedAt = restoredSession.bubbles.isNotEmpty 
-              ? restoredSession.bubbles.first.timestamp 
-              : restoredSession.createdAt;
+          // Initialize recording clock from restored session
+          _hydrateRecordingClockFromSession(restoredSession);
         } else if (_meetingProvider!.currentSession == null) {
           // Create new session if none exists
           await _meetingProvider!.createNewSession();
           // Clear bubbles for new session
           _speechProvider!.clearTranscript();
-          // Reset recording start time for new session
-          _recordingStartedAt = null;
+          // Reset recording clock for new session
+          _resetRecordingClock();
         }
       }
 
@@ -767,8 +765,8 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
           // It's a new session, clear bubbles
           if (mounted && _speechProvider != null) {
             _speechProvider!.clearTranscript();
-            // Reset recording start time for new session
-            _recordingStartedAt = null;
+            // Reset recording clock for new session
+            _resetRecordingClock();
           }
           return;
         }
@@ -781,24 +779,59 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
               _speechProvider!.bubbles.length != currentSession.bubbles.length) {
             if (mounted && _speechProvider != null) {
               _speechProvider!.restoreBubbles(currentSession.bubbles);
-              // Initialize recording start time from session
-              _recordingStartedAt = currentSession.bubbles.isNotEmpty 
-                  ? currentSession.bubbles.first.timestamp 
-                  : currentSession.createdAt;
+              // Initialize recording clock from session
+              _hydrateRecordingClockFromSession(currentSession);
             }
           }
         } else {
           // Session has no bubbles - clear any existing bubbles
           if (mounted && _speechProvider != null) {
             _speechProvider!.clearTranscript();
-            // Reset recording start time
-            _recordingStartedAt = null;
+            // Reset recording clock
+            _resetRecordingClock();
           }
         }
       } finally {
         _isUpdatingBubbles = false;
       }
     }
+  }
+
+  void _resetRecordingClock() {
+    _recordingStartedAt = null;
+    _recordingRunStartedAt = null;
+    _recordedElapsedBeforeCurrentRun = Duration.zero;
+  }
+
+  void _hydrateRecordingClockFromSession(MeetingSession session) {
+    _recordingStartedAt = session.bubbles.isNotEmpty
+        ? session.bubbles.first.timestamp
+        : session.createdAt;
+
+    if (session.bubbles.length >= 2) {
+      final span = session.bubbles.last.timestamp.difference(session.bubbles.first.timestamp);
+      _recordedElapsedBeforeCurrentRun = span.isNegative ? Duration.zero : span;
+    } else {
+      _recordedElapsedBeforeCurrentRun = Duration.zero;
+    }
+
+    _recordingRunStartedAt = null;
+  }
+
+  Duration? _currentRecordingElapsed({DateTime? now}) {
+    final hasClockState =
+        _recordingStartedAt != null || _recordingRunStartedAt != null || _recordedElapsedBeforeCurrentRun > Duration.zero;
+    if (!hasClockState) return null;
+
+    final at = now ?? DateTime.now();
+    Duration currentRun = Duration.zero;
+    if (_recordingRunStartedAt != null) {
+      final diff = at.difference(_recordingRunStartedAt!);
+      currentRun = diff.isNegative ? Duration.zero : diff;
+    }
+
+    final total = _recordedElapsedBeforeCurrentRun + currentRun;
+    return total.isNegative ? Duration.zero : total;
   }
 
   @override
@@ -847,6 +880,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
       // If recording started time is not set, calculate it from session/bubbles
       // This ensures that when resuming a session, we continue from where we left off
       _recordingStartedAt ??= _calculateRecordingStartTime() ?? DateTime.now();
+      _recordingRunStartedAt ??= DateTime.now();
       _recordingTimer ??= Timer.periodic(const Duration(seconds: 1), (_) {
         if (!mounted) return;
         final remainingMs = _currentRemainingBillingMs(speechProvider);
@@ -876,8 +910,13 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
       });
     } else {
       // Stop the timer when recording stops
-      // Don't reset _recordingStartedAt here - keep it so if recording resumes,
-      // it continues from the same start time
+      if (_recordingRunStartedAt != null) {
+        final runElapsed = DateTime.now().difference(_recordingRunStartedAt!);
+        if (!runElapsed.isNegative) {
+          _recordedElapsedBeforeCurrentRun += runElapsed;
+        }
+        _recordingRunStartedAt = null;
+      }
       _recordingTimer?.cancel();
       _recordingTimer = null;
     }
@@ -1032,7 +1071,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     }
     
     final now = DateTime.now();
-    final elapsed = _recordingStartedAt == null ? null : now.difference(_recordingStartedAt!);
+    final elapsed = _currentRecordingElapsed(now: now);
 
     // Prefer the other-side (system) last turn, otherwise fall back to last mic.
     final last = _lastFinalBubble(source: TranscriptSource.system) ??
@@ -2552,7 +2591,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
   ) {
     _ensureRecordingClock(speechProvider);
     final isRec = speechProvider.isRecording;
-    final elapsed = _recordingStartedAt == null ? null : DateTime.now().difference(_recordingStartedAt!);
+    final elapsed = _currentRecordingElapsed();
     
     // Check if this is a saved session (has bubbles or valid MongoDB ObjectId)
     final currentSession = meetingProvider.currentSession;
@@ -2839,6 +2878,10 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                                       return;
                                     }
                                   } catch (_) {}
+
+                                  if (shouldClear) {
+                                    _resetRecordingClock();
+                                  }
 
                                   _recordingRunStartRemainingMs = (_billingInfo != null ? _effectiveRemainingMinutes(_billingInfo!) : 0) * 60 * 1000;
                                   _limitStopTriggered = false;

@@ -6,7 +6,7 @@
 ; Example: If pubspec.yaml has "version: 1.2.3+5", set AppVersion to "1.2.3"
 
 #define AppName "FinalRound"
-#define AppVersion "1.0.0"
+#define AppVersion "1.0.2"
 #define AppPublisher "FinalRound"
 #define AppURL "https://finalroundapp.com"
 #define AppExeName "finalround.exe"
