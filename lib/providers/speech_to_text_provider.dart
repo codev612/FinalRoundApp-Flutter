@@ -55,12 +55,19 @@ class SpeechToTextProvider extends ChangeNotifier {
   bool _isConnected = false;
   bool _isDisposed = false;
   final List<TranscriptBubble> _bubbles = <TranscriptBubble>[];
+  int? _openSystemBubbleIndex;
   String _errorMessage = '';
   int _audioFrameCount = 0;
   
   // Resource optimization: Limit bubbles in memory to prevent excessive memory usage
   // Older bubbles are already saved to the session, so we can safely limit memory
   static const int _maxBubblesInMemory = 2000; // Keep last 2000 bubbles in memory
+
+  // ASR revision dedupe tuning (tight mode): catch shorter repeated runs.
+  static const int _dedupeMinTextWords = 8;
+  static const int _dedupeMaxRunLen = 10;
+  static const int _dedupeMinRunLen = 4;
+  static const int _dedupeMaxGapWords = 6;
 
   // AI response state (current streaming response only)
   String _currentAiResponse = '';
@@ -153,7 +160,30 @@ class SpeechToTextProvider extends ChangeNotifier {
     final existingTrimmed = existing.trimRight();
     if (existingTrimmed.isEmpty) return nextTrimmed;
 
-    if (existingTrimmed.toLowerCase().endsWith(nextTrimmed.toLowerCase())) {
+    final existingLower = existingTrimmed.toLowerCase();
+    final nextLower = nextTrimmed.toLowerCase();
+
+    // ASR often re-emits the same sentence from the beginning with edits.
+    // If both hypotheses share a strong opening prefix, treat next as a revision
+    // and replace instead of append to avoid repeated text growth.
+    if (_looksLikeRevisionRestart(existingTrimmed, nextTrimmed)) {
+      final keepNext = _shouldPreferNextRevision(existingTrimmed, nextTrimmed);
+      final chosen = keepNext ? nextTrimmed : existingTrimmed;
+      return _collapseNearDuplicateWordRuns(chosen);
+    }
+
+    final anchoredMerge = _mergeFromWordAnchor(existingTrimmed, nextTrimmed);
+    if (anchoredMerge != null) {
+      return _collapseNearDuplicateWordRuns(anchoredMerge);
+    }
+
+    // If one text fully contains the other, prefer the richer one.
+    if (existingLower.contains(nextLower)) return existingTrimmed;
+    if (nextLower.contains(existingLower)) {
+      return _collapseNearDuplicateWordRuns(nextTrimmed);
+    }
+
+    if (existingLower.endsWith(nextLower)) {
       return existingTrimmed;
     }
 
@@ -163,7 +193,6 @@ class SpeechToTextProvider extends ChangeNotifier {
     );
 
     final tailLower = tail.toLowerCase();
-    final nextLower = nextTrimmed.toLowerCase();
     final maxOverlap = tailLower.length < nextLower.length ? tailLower.length : nextLower.length;
 
     var overlap = 0;
@@ -177,7 +206,232 @@ class SpeechToTextProvider extends ChangeNotifier {
     if (toAppend.isEmpty) return existingTrimmed;
 
     final needsSpace = !existingTrimmed.endsWith(' ') && !existingTrimmed.endsWith('\n');
-    return existingTrimmed + (needsSpace ? ' ' : '') + toAppend;
+    final merged = existingTrimmed + (needsSpace ? ' ' : '') + toAppend;
+    return _collapseNearDuplicateWordRuns(merged);
+  }
+
+  String? _mergeFromWordAnchor(String existing, String next) {
+    final existingRaw = existing.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList(growable: false);
+    final nextRaw = next.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList(growable: false);
+    if (existingRaw.length < 6 || nextRaw.length < 6) return null;
+
+    final existingNorm = existingRaw.map(_normalizeTokenForDupCheck).toList(growable: false);
+    final nextNorm = nextRaw.map(_normalizeTokenForDupCheck).toList(growable: false);
+
+    int bestStart = -1;
+    int bestLen = 0;
+
+    for (int start = 0; start < existingNorm.length; start++) {
+      if (existingNorm[start].isEmpty || existingNorm[start] != nextNorm[0]) continue;
+
+      int len = 0;
+      while (start + len < existingNorm.length &&
+          len < nextNorm.length &&
+          existingNorm[start + len] == nextNorm[len] &&
+          existingNorm[start + len].isNotEmpty) {
+        len++;
+      }
+
+      if (len > bestLen) {
+        bestLen = len;
+        bestStart = start;
+      }
+    }
+
+    if (bestStart < 0) return null;
+
+    final minLen = existingNorm.length < nextNorm.length ? existingNorm.length : nextNorm.length;
+    final matchRatio = minLen == 0 ? 0.0 : bestLen / minLen;
+
+    // Require a strong anchor to avoid accidental merges on short/common phrases.
+    if (bestLen < 4 || matchRatio < 0.45) return null;
+
+    if (bestStart == 0) {
+      return next;
+    }
+
+    final merged = <String>[
+      ...existingRaw.sublist(0, bestStart),
+      ...nextRaw,
+    ];
+    return merged.join(' ').trim();
+  }
+
+  List<String> _normalizedWords(String text) {
+    return text
+        .split(RegExp(r'\s+'))
+        .map(_normalizeTokenForDupCheck)
+        .where((w) => w.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  bool _looksLikeRevisionRestart(String existing, String next) {
+    final existingWords = _normalizedWords(existing);
+    final nextWords = _normalizedWords(next);
+    if (existingWords.length < 6 || nextWords.length < 6) return false;
+
+    final maxPrefix = existingWords.length < nextWords.length ? existingWords.length : nextWords.length;
+    var commonPrefix = 0;
+    for (int i = 0; i < maxPrefix; i++) {
+      if (existingWords[i] != nextWords[i]) break;
+      commonPrefix++;
+    }
+
+    // Require a meaningful shared opening phrase.
+    if (commonPrefix < 5) return false;
+
+    final setA = existingWords.toSet();
+    final setB = nextWords.toSet();
+    final union = setA.union(setB).length;
+    if (union == 0) return false;
+    final similarity = setA.intersection(setB).length / union;
+
+    return similarity >= 0.55;
+  }
+
+  bool _shouldPreferNextRevision(String existing, String next) {
+    final existingWords = _normalizedWords(existing);
+    final nextWords = _normalizedWords(next);
+    if (existingWords.isEmpty) return true;
+    if (nextWords.isEmpty) return false;
+
+    final existingEnded = _isSystemSentenceTerminated(existing);
+    final nextEnded = _isSystemSentenceTerminated(next);
+    if (nextEnded && !existingEnded) return true;
+
+    // Prefer next if it is not significantly shorter; this keeps latest edits.
+    return nextWords.length >= (existingWords.length * 0.75);
+  }
+
+  String _normalizeTokenForDupCheck(String token) {
+    return token.toLowerCase().replaceAll(RegExp(r"[^a-z0-9']"), '');
+  }
+
+  String _collapseNearDuplicateWordRuns(String text) {
+    var words = text.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
+    if (words.length < _dedupeMinTextWords) return text.trim();
+
+    var changed = true;
+    while (changed) {
+      changed = false;
+
+      // Start with longer runs to avoid over-collapsing short common phrases.
+      for (int runLen = _dedupeMaxRunLen; runLen >= _dedupeMinRunLen && !changed; runLen--) {
+        if (words.length < runLen * 2) continue;
+
+        for (int i = 0; i + (runLen * 2) <= words.length && !changed; i++) {
+          final firstRun = words.sublist(i, i + runLen).map(_normalizeTokenForDupCheck).toList();
+          if (firstRun.any((t) => t.isEmpty)) continue;
+
+          for (int gap = 0; gap <= _dedupeMaxGapWords && !changed; gap++) {
+            final j = i + runLen + gap;
+            if (j + runLen > words.length) continue;
+
+            final secondRun = words.sublist(j, j + runLen).map(_normalizeTokenForDupCheck).toList();
+            var equal = true;
+            for (int k = 0; k < runLen; k++) {
+              if (firstRun[k] != secondRun[k]) {
+                equal = false;
+                break;
+              }
+            }
+            if (!equal) continue;
+
+            // Keep the first occurrence and drop the repeated later run.
+            words.removeRange(j, j + runLen);
+            changed = true;
+          }
+        }
+      }
+    }
+
+    final collapsed = words.join(' ').trim();
+    return _collapseRepeatedPhraseBlocks(_dropLeadingRestartClause(collapsed));
+  }
+
+  String _collapseRepeatedPhraseBlocks(String text) {
+    final rawWords = text.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList(growable: false);
+    if (rawWords.length < 10) return text.trim();
+
+    final normWords = rawWords.map(_normalizeTokenForDupCheck).toList(growable: false);
+
+    int bestFirst = -1;
+    int bestSecond = -1;
+    int bestLen = 0;
+
+    // Look for an earlier phrase that reappears later; keep the latest occurrence.
+    for (int phraseLen = 10; phraseLen >= 5; phraseLen--) {
+      if (rawWords.length < phraseLen * 2) continue;
+
+      for (int first = 0; first + phraseLen <= normWords.length; first++) {
+        if (normWords[first].isEmpty) continue;
+
+        for (int second = first + phraseLen; second + phraseLen <= normWords.length; second++) {
+          var equal = true;
+          for (int i = 0; i < phraseLen; i++) {
+            if (normWords[first + i] != normWords[second + i]) {
+              equal = false;
+              break;
+            }
+          }
+          if (!equal) continue;
+
+          // Prefer the longest and latest repeated block so we preserve the most recent revision.
+          final distance = second - first;
+          final bestDistance = bestSecond < 0 ? -1 : bestSecond - bestFirst;
+          if (phraseLen > bestLen || (phraseLen == bestLen && distance > bestDistance)) {
+            bestFirst = first;
+            bestSecond = second;
+            bestLen = phraseLen;
+          }
+        }
+      }
+
+      if (bestLen > 0) break;
+    }
+
+    if (bestLen < 5 || bestFirst < 0 || bestSecond < 0) return text.trim();
+
+    final preserved = <String>[
+      ...rawWords.sublist(0, bestFirst),
+      ...rawWords.sublist(bestSecond),
+    ];
+    return preserved.join(' ').trim();
+  }
+
+  String _dropLeadingRestartClause(String text) {
+    final rawWords = text.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList(growable: false);
+    if (rawWords.length < 8) return text.trim();
+
+    final normWords = rawWords.map(_normalizeTokenForDupCheck).toList(growable: false);
+
+    final maxPrefixLen = rawWords.length ~/ 2 < 6 ? rawWords.length ~/ 2 : 6;
+    for (int prefixLen = maxPrefixLen; prefixLen >= 3; prefixLen--) {
+      final prefix = normWords.sublist(0, prefixLen);
+      if (prefix.any((w) => w.isEmpty)) continue;
+
+      // Search nearby for a restart of the same opening phrase.
+      final maxStart = rawWords.length - prefixLen;
+      for (int start = 1; start <= maxStart && start <= 10; start++) {
+        final candidate = normWords.sublist(start, start + prefixLen);
+        var equal = true;
+        for (int i = 0; i < prefixLen; i++) {
+          if (prefix[i] != candidate[i]) {
+            equal = false;
+            break;
+          }
+        }
+        if (!equal) continue;
+
+        // Keep only the restarted clause if it continues with additional context.
+        final remaining = rawWords.length - start;
+        if (remaining >= prefixLen + 2) {
+          return rawWords.sublist(start).join(' ').trim();
+        }
+      }
+    }
+
+    return text.trim();
   }
 
   /// Calculate similarity between two texts (0.0 to 1.0)
@@ -259,6 +513,29 @@ class SpeechToTextProvider extends ChangeNotifier {
     return false;
   }
 
+  bool _isSystemSentenceTerminated(String text) {
+    final trimmed = text.trimRight();
+    return trimmed.endsWith('.') || trimmed.endsWith('?');
+  }
+
+  int? _getOpenSystemBubbleIndex() {
+    final idx = _openSystemBubbleIndex;
+    if (idx == null) return null;
+    if (idx < 0 || idx >= _bubbles.length) {
+      _openSystemBubbleIndex = null;
+      return null;
+    }
+    if (_bubbles[idx].source != TranscriptSource.system) {
+      _openSystemBubbleIndex = null;
+      return null;
+    }
+    return idx;
+  }
+
+  void _updateOpenSystemBubbleState({required int index, required String text}) {
+    _openSystemBubbleIndex = _isSystemSentenceTerminated(text) ? null : index;
+  }
+
   void _upsertFinalBubble({required TranscriptSource source, required String text}) {
     final trimmed = text.trim();
     if (trimmed.isEmpty) return;
@@ -295,9 +572,46 @@ class SpeechToTextProvider extends ChangeNotifier {
             !_bubbles[i].isDraft &&
             _calculateSimilarity(_bubbles[i].text, trimmed) > 0.6) {
           _bubbles.removeAt(i);
+          if (_openSystemBubbleIndex != null) {
+            if (_openSystemBubbleIndex == i) {
+              _openSystemBubbleIndex = null;
+            } else if (_openSystemBubbleIndex! > i) {
+              _openSystemBubbleIndex = _openSystemBubbleIndex! - 1;
+            }
+          }
           print('[SpeechToTextProvider] Replacing mic transcript with system version: "$trimmed"');
           break;
         }
+      }
+    }
+
+    // Keep appending system speech into the same in-progress bubble
+    // until sentence-ending punctuation is detected.
+    if (source == TranscriptSource.system) {
+      final openIndex = _getOpenSystemBubbleIndex();
+      if (openIndex != null) {
+        final previousText = _bubbles[openIndex].text;
+        final merged = _appendWithOverlap(previousText, trimmed);
+        _bubbles[openIndex] = _bubbles[openIndex].copyWith(
+          text: merged,
+          isDraft: false,
+          timestamp: DateTime.now(),
+        );
+
+        if (_onQuestionDetected != null &&
+            _isQuestion(merged) &&
+            !_isAiLoading &&
+            !_isQuestion(previousText)) {
+          print('[SpeechToTextProvider] Question detected in merged text: "$merged" - triggering auto ask');
+          Future.microtask(() {
+            if (!_isDisposed && _onQuestionDetected != null) {
+              _onQuestionDetected!('What should I say?');
+            }
+          });
+        }
+
+        _updateOpenSystemBubbleState(index: openIndex, text: merged);
+        return;
       }
     }
 
@@ -311,6 +625,9 @@ class SpeechToTextProvider extends ChangeNotifier {
           isDraft: false,
           timestamp: DateTime.now(),
         );
+        if (source == TranscriptSource.system) {
+          _updateOpenSystemBubbleState(index: _bubbles.length - 1, text: finalText);
+        }
         // Check if finalized text is a question from system source (others asking)
         if (source == TranscriptSource.system && 
             _onQuestionDetected != null && 
@@ -344,6 +661,9 @@ class SpeechToTextProvider extends ChangeNotifier {
           }
         });
       }
+      if (source == TranscriptSource.system) {
+        _updateOpenSystemBubbleState(index: _bubbles.length - 1, text: merged);
+      }
       return;
     }
 
@@ -355,6 +675,9 @@ class SpeechToTextProvider extends ChangeNotifier {
       isDraft: false,
     );
     _bubbles.add(newBubble);
+    if (source == TranscriptSource.system) {
+      _updateOpenSystemBubbleState(index: _bubbles.length - 1, text: trimmed);
+    }
     
     // Resource optimization: Limit bubbles in memory to prevent excessive memory usage
     // Older bubbles are already saved to the session, so we can safely limit memory
@@ -362,6 +685,13 @@ class SpeechToTextProvider extends ChangeNotifier {
       // Remove oldest bubbles (keep most recent)
       final toRemove = _bubbles.length - _maxBubblesInMemory;
       _bubbles.removeRange(0, toRemove);
+      if (_openSystemBubbleIndex != null) {
+        if (_openSystemBubbleIndex! < toRemove) {
+          _openSystemBubbleIndex = null;
+        } else {
+          _openSystemBubbleIndex = _openSystemBubbleIndex! - toRemove;
+        }
+      }
       print('[SpeechToTextProvider] Trimmed bubble history: removed $toRemove old bubbles (keeping last $_maxBubblesInMemory)');
     }
     
@@ -383,12 +713,29 @@ class SpeechToTextProvider extends ChangeNotifier {
     final trimmed = text.trim();
     if (trimmed.isEmpty) return;
 
+    if (source == TranscriptSource.system) {
+      final openIndex = _getOpenSystemBubbleIndex();
+      if (openIndex != null) {
+        final merged = _appendWithOverlap(_bubbles[openIndex].text, trimmed);
+        _bubbles[openIndex] = _bubbles[openIndex].copyWith(
+          text: merged,
+          isDraft: true,
+          timestamp: DateTime.now(),
+        );
+        _openSystemBubbleIndex = openIndex;
+        return;
+      }
+    }
+
     // Update existing draft bubble for this source if it is the most recent.
     if (_bubbles.isNotEmpty && _bubbles.last.source == source && _bubbles.last.isDraft) {
       _bubbles[_bubbles.length - 1] = _bubbles.last.copyWith(
         text: trimmed,
         timestamp: DateTime.now(),
       );
+      if (source == TranscriptSource.system) {
+        _openSystemBubbleIndex = _bubbles.length - 1;
+      }
       return;
     }
 
@@ -401,6 +748,9 @@ class SpeechToTextProvider extends ChangeNotifier {
         isDraft: true,
       ),
     );
+    if (source == TranscriptSource.system) {
+      _openSystemBubbleIndex = _bubbles.length - 1;
+    }
   }
 
   Future<bool> requestPermissions() async {
@@ -727,6 +1077,7 @@ class SpeechToTextProvider extends ChangeNotifier {
       // When resuming, preserve existing bubbles
       if (clearExisting) {
         _bubbles.clear();
+        _openSystemBubbleIndex = null;
       }
       
       print('[SpeechToTextProvider] Permission granted, connecting to transcription service...');
