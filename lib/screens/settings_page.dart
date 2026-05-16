@@ -18,6 +18,7 @@ import '../utils/error_message_helper.dart';
 import 'email_change_verification_dialog.dart';
 import 'manage_mode_page.dart';
 import 'manage_question_templates_page.dart';
+import '../providers/ai_response_settings_provider.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -240,7 +241,7 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget _buildAppearanceContent() {
-    return _AppearanceSettings();
+    return const AppearanceSettings();
   }
 
   Widget _buildAudioDevicesContent() {
@@ -476,6 +477,219 @@ class _AudioDeviceSettingsState extends State<_AudioDeviceSettings> {
         ),
       ],
     );
+  }
+}
+
+class AppearanceSettings extends StatefulWidget {
+  const AppearanceSettings({super.key});
+
+  @override
+  State<AppearanceSettings> createState() => _AppearanceSettingsState();
+}
+
+class _AppearanceSettingsState extends State<AppearanceSettings> {
+  bool _undetectable = false;
+  bool _skipTaskbar = true;
+  bool _meetingPageTransparent = true;
+  bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSettings();
+  }
+
+  Future<void> _loadSettings() async {
+    setState(() => _isLoading = true);
+    final undetectable = await AppearanceService.getUndetectable();
+    final skipTaskbar = await AppearanceService.getSkipTaskbar();
+    final meetingPageTransparent = await AppearanceService.getMeetingPageTransparent();
+    if (!mounted) return;
+    setState(() {
+      _undetectable = undetectable;
+      _skipTaskbar = skipTaskbar;
+      _meetingPageTransparent = meetingPageTransparent;
+      _isLoading = false;
+    });
+  }
+
+  Future<void> _onUndetectableChanged(bool value) async {
+    setState(() => _undetectable = value);
+    await AppearanceService.setUndetectable(value);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            value
+                ? 'Window is now undetectable in screen sharing'
+                : 'Window is now detectable in screen sharing',
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _onSkipTaskbarChanged(bool value) async {
+    setState(() => _skipTaskbar = value);
+    await AppearanceService.setSkipTaskbar(value);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(value ? 'Taskbar icon hidden' : 'Taskbar icon shown'),
+        ),
+      );
+    }
+  }
+
+  Future<void> _onMeetingPageTransparentChanged(bool value) async {
+    setState(() => _meetingPageTransparent = value);
+    await AppearanceService.setMeetingPageTransparent(value);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            value
+                ? 'Meeting page background is now transparent'
+                : 'Meeting page background is now opaque',
+          ),
+        ),
+      );
+    }
+  }
+
+  Widget _buildAiFontSlider(BuildContext context) {
+    return Consumer<AiResponseSettingsProvider>(
+      builder: (context, aiSettings, child) {
+        return Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.text_fields),
+                    const SizedBox(width: 8),
+                    Text(
+                      'AI Response Font Size',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Adjust the font size used for AI response text in the meeting page.',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 12),
+                Slider(
+                  value: aiSettings.fontSize,
+                  min: 10,
+                  max: 28,
+                  divisions: 18,
+                  label: aiSettings.fontSize.toStringAsFixed(0),
+                  onChanged: aiSettings.setFontSize,
+                ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('10', style: Theme.of(context).textTheme.bodySmall),
+                    Text(
+                      aiSettings.fontSize.toStringAsFixed(0),
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    Text('28', style: Theme.of(context).textTheme.bodySmall),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        const Text(
+          'Appearance',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 24),
+        if (_isLoading)
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.all(24.0),
+              child: CircularProgressIndicator(),
+            ),
+          )
+        else ...[
+          Card(
+            child: SwitchListTile(
+              title: const Text('Undetectable in Screen Sharing'),
+              subtitle: const Text(
+                'Hide the window from screen capture and screen sharing applications',
+              ),
+              value: _undetectable,
+              onChanged: _onUndetectableChanged,
+              secondary: const Icon(Icons.visibility_off),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Card(
+            child: SwitchListTile(
+              title: const Text('Hide Taskbar Icon'),
+              subtitle: const Text(
+                'Hide the app icon from the Windows taskbar',
+              ),
+              value: _skipTaskbar,
+              onChanged: _onSkipTaskbarChanged,
+              secondary: const Icon(Icons.task_alt),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Card(
+            child: SwitchListTile(
+              title: const Text('Transparent Meeting Page Background'),
+              subtitle: const Text(
+                'Make the meeting page background transparent or opaque',
+              ),
+              value: _meetingPageTransparent,
+              onChanged: _onMeetingPageTransparentChanged,
+              secondary: const Icon(Icons.auto_awesome),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Card(
+            child: Consumer<ThemeProvider>(
+              builder: (context, themeProvider, child) {
+                return _ThemeModeCard(
+                  label: _getThemeModeLabel(themeProvider.themeMode),
+                  value: themeProvider.themeMode,
+                  onChanged: (mode) => themeProvider.setThemeMode(mode, context: context),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 16),
+          _buildAiFontSlider(context),
+        ],
+      ],
+    );
+  }
+
+  String _getThemeModeLabel(ThemeMode mode) {
+    switch (mode) {
+      case ThemeMode.light:
+        return 'Light';
+      case ThemeMode.dark:
+        return 'Dark';
+      case ThemeMode.system:
+        return 'System';
+    }
   }
 }
 
@@ -1286,167 +1500,6 @@ class _ProfileEditFormState extends State<_ProfileEditForm> {
         ),
       ],
     );
-  }
-}
-
-class _AppearanceSettings extends StatefulWidget {
-  const _AppearanceSettings();
-
-  @override
-  State<_AppearanceSettings> createState() => _AppearanceSettingsState();
-}
-
-class _AppearanceSettingsState extends State<_AppearanceSettings> {
-  bool _undetectable = false;
-  bool _skipTaskbar = true;
-  bool _meetingPageTransparent = true;
-  bool _isLoading = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadSettings();
-  }
-
-  Future<void> _loadSettings() async {
-    setState(() => _isLoading = true);
-    final undetectable = await AppearanceService.getUndetectable();
-    final skipTaskbar = await AppearanceService.getSkipTaskbar();
-    final meetingPageTransparent = await AppearanceService.getMeetingPageTransparent();
-    setState(() {
-      _undetectable = undetectable;
-      _skipTaskbar = skipTaskbar;
-      _meetingPageTransparent = meetingPageTransparent;
-      _isLoading = false;
-    });
-  }
-
-  Future<void> _onUndetectableChanged(bool value) async {
-    setState(() => _undetectable = value);
-    await AppearanceService.setUndetectable(value);
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(value 
-            ? 'Window is now undetectable in screen sharing'
-            : 'Window is now detectable in screen sharing'),
-        ),
-      );
-    }
-  }
-
-  Future<void> _onSkipTaskbarChanged(bool value) async {
-    setState(() => _skipTaskbar = value);
-    await AppearanceService.setSkipTaskbar(value);
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(value 
-            ? 'Taskbar icon hidden'
-            : 'Taskbar icon shown'),
-        ),
-      );
-    }
-  }
-
-  Future<void> _onMeetingPageTransparentChanged(bool value) async {
-    setState(() => _meetingPageTransparent = value);
-    await AppearanceService.setMeetingPageTransparent(value);
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(value 
-            ? 'Meeting page background is now transparent'
-            : 'Meeting page background is now opaque'),
-        ),
-      );
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        const Text(
-          'Appearance',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-        ),
-        const SizedBox(height: 24),
-        if (_isLoading)
-          const Center(
-            child: Padding(
-              padding: EdgeInsets.all(24.0),
-              child: CircularProgressIndicator(),
-            ),
-          )
-        else ...[
-          Card(
-            child: SwitchListTile(
-              title: const Text('Undetectable in Screen Sharing'),
-              subtitle: const Text(
-                'Hide the window from screen capture and screen sharing applications',
-              ),
-              value: _undetectable,
-              onChanged: _onUndetectableChanged,
-              secondary: const Icon(Icons.visibility_off),
-            ),
-          ),
-          const SizedBox(height: 16),
-          Card(
-            child: SwitchListTile(
-              title: const Text('Hide Taskbar Icon'),
-              subtitle: const Text(
-                'Hide the app icon from the Windows taskbar',
-              ),
-              value: _skipTaskbar,
-              onChanged: _onSkipTaskbarChanged,
-              secondary: const Icon(Icons.task_alt),
-            ),
-          ),
-          const SizedBox(height: 16),
-          Card(
-            child: SwitchListTile(
-              title: const Text('Transparent Meeting Page Background'),
-              subtitle: const Text(
-                'Make the meeting page background transparent or opaque',
-              ),
-              value: _meetingPageTransparent,
-              onChanged: _onMeetingPageTransparentChanged,
-              secondary: const Icon(Icons.auto_awesome),
-            ),
-          ),
-          const SizedBox(height: 16),
-          Card(
-            child: Consumer<ThemeProvider>(
-              builder: (context, themeProvider, child) {
-                // Avoid ExpansionTile on Windows here: it triggers an accessibility "announce"
-                // message that can spam the console with:
-                // "Announce message 'viewId' property must be a FlutterViewId."
-                //
-                // This custom expandable card keeps the UX but doesn't call announce.
-                return _ThemeModeCard(
-                  label: _getThemeModeLabel(themeProvider.themeMode),
-                  value: themeProvider.themeMode,
-                  onChanged: (mode) => themeProvider.setThemeMode(mode, context: context),
-                );
-              },
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-
-  String _getThemeModeLabel(ThemeMode mode) {
-    switch (mode) {
-      case ThemeMode.light:
-        return 'Light';
-      case ThemeMode.dark:
-        return 'Dark';
-      case ThemeMode.system:
-        return 'System';
-    }
   }
 }
 

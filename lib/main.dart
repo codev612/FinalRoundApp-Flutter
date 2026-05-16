@@ -13,6 +13,7 @@ import 'providers/auth_provider.dart';
 import 'providers/theme_provider.dart';
 import 'providers/notification_provider.dart';
 import 'providers/dashboard_provider.dart';
+import 'providers/ai_response_settings_provider.dart';
 import 'services/ai_service.dart';
 import 'services/appearance_service.dart';
 import 'services/http_client_service.dart';
@@ -304,6 +305,9 @@ class MyApp extends StatelessWidget {
         ),
         ChangeNotifierProvider(
           create: (_) => ThemeProvider(),
+        ),
+        ChangeNotifierProvider(
+          create: (_) => AiResponseSettingsProvider(),
         ),
         ChangeNotifierProxyProvider<MeetingProvider, DashboardProvider>(
           create: (context) {

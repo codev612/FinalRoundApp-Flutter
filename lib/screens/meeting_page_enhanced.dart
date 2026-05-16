@@ -24,6 +24,7 @@ import '../services/meeting_mode_service.dart';
 import '../services/ai_service.dart';
 import '../services/billing_service.dart';
 import '../providers/shortcuts_provider.dart';
+import '../providers/ai_response_settings_provider.dart';
 import '../utils/error_message_helper.dart';
 import 'manage_mode_page.dart';
 import 'manage_question_templates_page.dart';
@@ -1983,111 +1984,116 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
 
   /// Build markdown content for a single response
   Widget _buildMarkdownContent(String text) {
-    if (text.isEmpty) {
-      return const Text(
-        'No response',
-        style: TextStyle(
-          color: Colors.white54,
-          fontStyle: FontStyle.italic,
-        ),
-      );
-    }
-
-    try {
-      return Markdown(
-      data: text,
-      selectable: true,
-      softLineBreak: true,
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      styleSheet: MarkdownStyleSheet(
-        p: const TextStyle(
-          color: Colors.white,
-          fontSize: 14,
-          height: 1.5,
-        ),
-        h1: const TextStyle(
-          color: Colors.white,
-          fontSize: 24,
-          fontWeight: FontWeight.bold,
-        ),
-        h2: const TextStyle(
-          color: Colors.white,
-          fontSize: 20,
-          fontWeight: FontWeight.bold,
-        ),
-        h3: const TextStyle(
-          color: Colors.white,
-          fontSize: 18,
-          fontWeight: FontWeight.bold,
-        ),
-        h4: const TextStyle(
-          color: Colors.white,
-          fontSize: 16,
-          fontWeight: FontWeight.bold,
-        ),
-        strong: const TextStyle(
-          color: Colors.white,
-          fontWeight: FontWeight.bold,
-        ),
-        em: const TextStyle(
-          color: Colors.white,
-          fontStyle: FontStyle.italic,
-        ),
-        code: TextStyle(
-          color: Colors.lightBlueAccent,
-          backgroundColor: Colors.black.withValues(alpha: 0.3),
-          fontFamily: 'monospace',
-          fontSize: 13,
-        ),
-        codeblockDecoration: BoxDecoration(
-          color: const Color(0xFF1E1E1E),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: Colors.white24),
-        ),
-        codeblockPadding: const EdgeInsets.all(12),
-        blockquote: const TextStyle(
-          color: Colors.white70,
-          fontStyle: FontStyle.italic,
-        ),
-        blockquoteDecoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.05),
-          border: const Border(
-            left: BorderSide(color: Colors.white38, width: 4),
-          ),
-        ),
-        listBullet: const TextStyle(color: Colors.white),
-        tableHead: const TextStyle(
-          color: Colors.white,
-          fontWeight: FontWeight.bold,
-        ),
-        tableBody: const TextStyle(color: Colors.white),
-        tableBorder: TableBorder.all(color: Colors.white30),
-        horizontalRuleDecoration: const BoxDecoration(
-          border: Border(
-            top: BorderSide(color: Colors.white30, width: 1),
-          ),
-        ),
-        a: const TextStyle(
-          color: Colors.lightBlueAccent,
-          decoration: TextDecoration.underline,
-        ),
-      ),
-      builders: {
-        'code': _CodeBlockBuilder(),
+    return Consumer<AiResponseSettingsProvider>(
+      builder: (context, aiSettings, _) {
+        final fontSize = aiSettings.fontSize;
+        if (text.isEmpty) {
+          return Text(
+            'No response',
+            style: TextStyle(
+              color: Colors.white54,
+              fontStyle: FontStyle.italic,
+              fontSize: fontSize,
+            ),
+          );
+        }
+        try {
+          return Markdown(
+            data: text,
+            selectable: true,
+            softLineBreak: true,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            styleSheet: MarkdownStyleSheet(
+              p: TextStyle(
+                color: Colors.white,
+                fontSize: fontSize,
+                height: 1.5,
+              ),
+              h1: TextStyle(
+                color: Colors.white,
+                fontSize: fontSize + 10,
+                fontWeight: FontWeight.bold,
+              ),
+              h2: TextStyle(
+                color: Colors.white,
+                fontSize: fontSize + 6,
+                fontWeight: FontWeight.bold,
+              ),
+              h3: TextStyle(
+                color: Colors.white,
+                fontSize: fontSize + 4,
+                fontWeight: FontWeight.bold,
+              ),
+              h4: TextStyle(
+                color: Colors.white,
+                fontSize: fontSize + 2,
+                fontWeight: FontWeight.bold,
+              ),
+              strong: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+              em: const TextStyle(
+                color: Colors.white,
+                fontStyle: FontStyle.italic,
+              ),
+              code: TextStyle(
+                color: Colors.lightBlueAccent,
+                backgroundColor: Colors.black.withValues(alpha: 0.3),
+                fontFamily: 'monospace',
+                fontSize: fontSize - 1,
+              ),
+              codeblockDecoration: BoxDecoration(
+                color: const Color(0xFF1E1E1E),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.white24),
+              ),
+              codeblockPadding: const EdgeInsets.all(12),
+              blockquote: const TextStyle(
+                color: Colors.white70,
+                fontStyle: FontStyle.italic,
+              ),
+              blockquoteDecoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.05),
+                border: const Border(
+                  left: BorderSide(color: Colors.white38, width: 4),
+                ),
+              ),
+              listBullet: const TextStyle(color: Colors.white),
+              tableHead: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+              tableBody: const TextStyle(color: Colors.white),
+              tableBorder: TableBorder.all(color: Colors.white30),
+              horizontalRuleDecoration: const BoxDecoration(
+                border: Border(
+                  top: BorderSide(color: Colors.white30, width: 1),
+                ),
+              ),
+              a: const TextStyle(
+                color: Colors.lightBlueAccent,
+                decoration: TextDecoration.underline,
+              ),
+            ),
+            builders: {
+              'code': _CodeBlockBuilder(),
+            },
+          );
+        } catch (e) {
+          // Fallback to plain text if markdown parsing fails
+          return SelectableText(
+            text,
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: fontSize,
+              height: 1.5,
+            ),
+          );
+        }
       },
     );
-    } catch (e) {
-      // Fallback to plain text if markdown parsing fails
-      return SelectableText(
-        text,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 14,
-          height: 1.5,
-        ),
-      );
-    }
   }
 
   Widget _buildCaptureTargetPickerPill() {
