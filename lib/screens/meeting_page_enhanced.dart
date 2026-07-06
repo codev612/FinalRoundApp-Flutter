@@ -1545,7 +1545,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
       });
 
       // If selected model is not allowed in this plan, snap to first allowed model.
-      final allowed = info.allowedModels;
+      final allowed = _effectiveAllowedModels();
       final selected = _selectedAiModel.trim();
       if (allowed.isNotEmpty && selected.toLowerCase() != 'auto' && !allowed.contains(selected)) {
         await _setAiModel(allowed.first);
@@ -1569,11 +1569,28 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
 
   static const double _modelMenuItemHeight = 36.0;
 
+  List<String> _effectiveAllowedModels() {
+    final info = _billingInfo;
+    final allowed = info?.allowedModels ?? const <String>[];
+    final plan = info?.plan.trim().toLowerCase() ?? '';
+
+    if (allowed.isEmpty) {
+      return <String>['gpt-5.4', 'gpt-5.3', 'gpt-5.2', 'gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'];
+    }
+
+    // Temporary client-side augmentation for paid plans until backend allowedModels includes newest models.
+    if (plan == 'pro' || plan == 'pro_plus') {
+      final merged = <String>[...allowed];
+      if (!merged.contains('gpt-5.4')) merged.insert(0, 'gpt-5.4');
+      if (!merged.contains('gpt-5.3')) merged.insert(1, 'gpt-5.3');
+      return merged;
+    }
+
+    return allowed;
+  }
+
   List<PopupMenuEntry<String>> _buildModelMenuItems() {
-    final allowed = _billingInfo?.allowedModels;
-    final models = (allowed != null && allowed.isNotEmpty)
-        ? allowed
-        : <String>['gpt-5.2', 'gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'];
+    final models = _effectiveAllowedModels();
 
     final items = <PopupMenuEntry<String>>[];
     items.add(
