@@ -1,12 +1,37 @@
 /// Utility class to convert raw error messages to user-friendly messages
 class ErrorMessageHelper {
+  static String _unwrapExceptionPrefix(String message) {
+    var value = message.trim();
+    var changed = true;
+
+    while (changed) {
+      changed = false;
+      final lower = value.toLowerCase();
+
+      if (lower.startsWith('exception:')) {
+        value = value.substring('exception:'.length).trim();
+        changed = true;
+      }
+
+      // Unwrap common nested format: Exception(Failed ...)
+      if (lower.startsWith('exception(') && value.endsWith(')')) {
+        value = value.substring('exception('.length, value.length - 1).trim();
+        changed = true;
+      }
+    }
+
+    return value;
+  }
+
   /// Converts a raw exception/error to a user-friendly message
   static String toUserFriendly(dynamic error) {
     if (error == null) {
       return 'An unexpected error occurred';
     }
 
-    final errorString = error.toString().toLowerCase();
+    final rawError = error.toString();
+    final unwrapped = _unwrapExceptionPrefix(rawError);
+    final errorString = unwrapped.toLowerCase();
 
     // Network/Connection errors
     if (errorString.contains('failed host lookup') ||
@@ -20,6 +45,10 @@ class ErrorMessageHelper {
         errorString.contains('connection timed out') ||
         errorString.contains('connection reset')) {
       return 'Cannot reach the server. Please try again later.';
+    }
+
+    if (errorString.contains('timed out') || errorString.contains('timeout')) {
+      return 'Request timed out. Please check your connection and try again.';
     }
 
     if (errorString.contains('network') && errorString.contains('error')) {
@@ -76,6 +105,13 @@ class ErrorMessageHelper {
       return 'Microphone permission is required. Please enable it in settings.';
     }
 
+    // Normalize generic backend fallback errors (including common misspelling).
+    if (errorString.contains('an error occured') ||
+        errorString.contains('an error occurred') &&
+            errorString.contains('please try again')) {
+      return 'Temporary server issue. Please try again.';
+    }
+
     // If it's already a user-friendly message (doesn't contain technical terms)
     if (!errorString.contains('exception') &&
         !errorString.contains('error:') &&
@@ -85,7 +121,7 @@ class ErrorMessageHelper {
         !errorString.contains('clientexception') &&
         !errorString.contains('http')) {
       // Check if it's a short, readable message
-      final cleanError = error.toString();
+      final cleanError = unwrapped;
       if (cleanError.length < 100 && !cleanError.contains(':')) {
         return cleanError;
       }

@@ -20,6 +20,7 @@ class MeetingProvider extends ChangeNotifier {
   List<MeetingSession> _sessions = [];
   bool _isLoading = false;
   String _errorMessage = '';
+  String _lastRawError = '';
   bool _isGeneratingSummary = false;
   bool _isGeneratingInsights = false;
   bool _isGeneratingQuestions = false;
@@ -143,9 +144,11 @@ class MeetingProvider extends ChangeNotifier {
   List<MeetingSession> get sessions => List.unmodifiable(_sessions);
   bool get isLoading => _isLoading;
   String get errorMessage => _errorMessage;
+  String get lastRawError => _lastRawError;
 
   void clearError() {
     _errorMessage = '';
+    _lastRawError = '';
     notifyListeners();
   }
   bool get isGeneratingSummary => _isGeneratingSummary;
@@ -174,13 +177,9 @@ class MeetingProvider extends ChangeNotifier {
         limit: limit,
         skip: skip,
         search: search,
-      ).timeout(
-        const Duration(seconds: 5),
-        onTimeout: () {
-          throw Exception('Request timed out. Please check your connection.');
-        },
       );
     } catch (e) {
+      _lastRawError = e.toString();
       _errorMessage = ErrorMessageHelper.toUserFriendly(e);
     } finally {
       _isLoading = false;
@@ -285,6 +284,7 @@ class MeetingProvider extends ChangeNotifier {
       // Reload all sessions (no pagination) to ensure the newly saved session appears
       await loadSessions(); // No parameters = load all sessions
     } catch (e) {
+      _lastRawError = e.toString();
       _errorMessage = ErrorMessageHelper.toUserFriendly(e);
     } finally {
       _isLoading = false;
@@ -320,6 +320,7 @@ class MeetingProvider extends ChangeNotifier {
       }
     } catch (e) {
       print('[MeetingProvider] Error in loadSession: $e');
+      _lastRawError = e.toString();
       _errorMessage = ErrorMessageHelper.toUserFriendly(e);
     } finally {
       _isLoading = false;
@@ -339,6 +340,7 @@ class MeetingProvider extends ChangeNotifier {
       }
       await loadSessions();
     } catch (e) {
+      _lastRawError = e.toString();
       _errorMessage = ErrorMessageHelper.toUserFriendly(e);
     } finally {
       _isLoading = false;
@@ -640,6 +642,7 @@ class MeetingProvider extends ChangeNotifier {
     } catch (e, stackTrace) {
       print('[MeetingProvider] Error generating summary: $e');
       print('[MeetingProvider] Stack trace: $stackTrace');
+      _lastRawError = e.toString();
       _errorMessage = ErrorMessageHelper.toUserFriendly(e);
     } finally {
       _isGeneratingSummary = false;
@@ -691,6 +694,7 @@ class MeetingProvider extends ChangeNotifier {
     } catch (e, stackTrace) {
       print('[MeetingProvider] Error generating insights: $e');
       print('[MeetingProvider] Stack trace: $stackTrace');
+      _lastRawError = e.toString();
       _errorMessage = ErrorMessageHelper.toUserFriendly(e);
     } finally {
       _isGeneratingInsights = false;
@@ -748,6 +752,7 @@ class MeetingProvider extends ChangeNotifier {
     } catch (e, stackTrace) {
       print('[MeetingProvider] Error generating questions: $e');
       print('[MeetingProvider] Stack trace: $stackTrace');
+      _lastRawError = e.toString();
       _errorMessage = ErrorMessageHelper.toUserFriendly(e);
       _isGeneratingQuestions = false;
       notifyListeners();

@@ -435,14 +435,17 @@ class _ManageModePageState extends State<ManageModePage> {
                                 padding: const EdgeInsets.only(bottom: 8),
                                 children: _customModes.map((c) {
                                   final isSelected = !_showingTemplates && _selected?.id == c.id;
-                                  return ListTile(
-                                    selected: isSelected,
-                                    leading: Icon(c.icon),
-                                    title: Text(c.label),
-                                    onTap: () => setState(() {
-                                      _showingTemplates = false;
-                                      _selected = c;
-                                    }),
+                                  return Material(
+                                    color: Colors.transparent,
+                                    child: ListTile(
+                                      selected: isSelected,
+                                      leading: Icon(c.icon),
+                                      title: Text(c.label),
+                                      onTap: () => setState(() {
+                                        _showingTemplates = false;
+                                        _selected = c;
+                                      }),
+                                    ),
                                   );
                                 }).toList(),
                               ),

@@ -128,13 +128,16 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
               ),
-              child: ListTile(
-                leading: const Icon(Icons.logout),
-                title: const Text('Sign Out'),
-                onTap: () async {
-                  await authProvider.signOut();
-                  // Navigation will happen automatically via AppShell listening to auth state
-                },
+              child: Material(
+                color: Colors.transparent,
+                child: ListTile(
+                  leading: const Icon(Icons.logout),
+                  title: const Text('Sign Out'),
+                  onTap: () async {
+                    await authProvider.signOut();
+                    // Navigation will happen automatically via AppShell listening to auth state
+                  },
+                ),
               ),
             );
           },

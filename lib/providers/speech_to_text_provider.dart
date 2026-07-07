@@ -11,6 +11,7 @@ import '../services/ai_service.dart';
 import '../models/transcript_bubble.dart';
 import '../models/ai_response_entry.dart';
 import '../config/constants.dart';
+import '../utils/error_message_helper.dart';
 
 class SpeechToTextProvider extends ChangeNotifier {
   TranscriptionService? _transcriptionService;
@@ -22,6 +23,7 @@ class SpeechToTextProvider extends ChangeNotifier {
   bool _isSystemAudioCapturing = false;
   bool _useMic = false;
   bool _isStopping = false; // Prevent concurrent stop operations
+  static const Duration _connectRetryDelay = Duration(milliseconds: 450);
 
   // System-audio watchdog (Windows loopback can stall on device changes)
   DateTime? _lastSystemAudioFrameAt;
@@ -1151,7 +1153,7 @@ class SpeechToTextProvider extends ChangeNotifier {
       
       print('[SpeechToTextProvider] Permission granted, connecting to transcription service...');
       // Connect to WebSocket
-      await _transcriptionService?.connect();
+      await _connectTranscriptionWithRetry();
       _isConnected = true;
 
       // Mark recording active early so system-audio polling can work even if mic fails to start.
@@ -1216,7 +1218,7 @@ class SpeechToTextProvider extends ChangeNotifier {
               return;
             }
             
-            _errorMessage = error.toString();
+            _errorMessage = ErrorMessageHelper.toUserFriendly(error);
             // If recording was active, stop it when WebSocket error occurs
             if (_isRecording) {
               print('[SpeechToTextProvider] WebSocket error during recording, stopping recording');
@@ -1381,11 +1383,28 @@ class SpeechToTextProvider extends ChangeNotifier {
 
       print('[SpeechToTextProvider] Recording started${_useMic ? ' with microphone' : ' without microphone'}');
     } catch (e) {
-      _errorMessage = 'Failed to start recording: $e';
+      _errorMessage = ErrorMessageHelper.toUserFriendly(e);
       print('[SpeechToTextProvider] Error: $e');
       _isRecording = false;
       _isConnected = false;
       notifyListeners();
+    }
+  }
+
+  Future<void> _connectTranscriptionWithRetry() async {
+    try {
+      await _transcriptionService?.connect();
+      return;
+    } catch (firstError) {
+      print('[SpeechToTextProvider] First transcription connect attempt failed: $firstError');
+      await Future.delayed(_connectRetryDelay);
+      try {
+        await _transcriptionService?.connect();
+        return;
+      } catch (secondError) {
+        print('[SpeechToTextProvider] Second transcription connect attempt failed: $secondError');
+        rethrow;
+      }
     }
   }
 
@@ -1820,6 +1839,11 @@ class SpeechToTextProvider extends ChangeNotifier {
     _errorMessage = '';
     _currentAiResponse = '';
     _aiErrorMessage = '';
+    notifyListeners();
+  }
+
+  void clearError() {
+    _errorMessage = '';
     notifyListeners();
   }
 

@@ -230,8 +230,10 @@ class _HoverableListTileState extends State<_HoverableListTile> {
                   ),
                 ],
         ),
-        child: ListTile(
-          contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+        child: Material(
+          color: Colors.transparent,
+          child: ListTile(
+            contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
           title: Consumer<SpeechToTextProvider>(
             builder: (context, speechProvider, _) {
               final currentSession = widget.provider.currentSession;
@@ -512,6 +514,7 @@ class _HoverableListTileState extends State<_HoverableListTile> {
               }
             });
           },
+          ),
         ),
       ),
     );
@@ -529,44 +532,126 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  static const int _pageSize = 25;
+  static const double _loadMoreThresholdPx = 420;
+
+  final ScrollController _sessionsScrollController = ScrollController();
+  final List<MeetingSession> _pagedSessions = <MeetingSession>[];
+
+  bool _isInitialLoading = true;
+  bool _isLoadingMore = false;
+  bool _hasMoreSessions = true;
+  int _skip = 0;
+
   @override
   void initState() {
     super.initState();
+    _sessionsScrollController.addListener(_onSessionsScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      final authProvider = context.read<AuthProvider>();
-      final meetingProvider = context.read<MeetingProvider>();
-      final dashboardProvider = context.read<DashboardProvider>();
-      // Ensure auth token is set before loading sessions
-      meetingProvider.updateAuthToken(authProvider.token);
-      dashboardProvider.setAuthToken(authProvider.token);
-      await meetingProvider.loadSessions(); // Load all sessions (no pagination for homepage)
-      if (!mounted) return;
-      await dashboardProvider.loadStats(); // Must run after sessions are loaded for total meeting time
+      await _bootstrapHomeData();
     });
+  }
+
+  @override
+  void dispose() {
+    _sessionsScrollController
+      ..removeListener(_onSessionsScroll)
+      ..dispose();
+    super.dispose();
+  }
+
+  Future<void> _bootstrapHomeData() async {
+    final authProvider = context.read<AuthProvider>();
+    final meetingProvider = context.read<MeetingProvider>();
+    final dashboardProvider = context.read<DashboardProvider>();
+
+    meetingProvider.updateAuthToken(authProvider.token);
+    dashboardProvider.setAuthToken(authProvider.token);
+
+    await _loadNextPage(reset: true);
+    if (!mounted) return;
+    await dashboardProvider.loadStats();
+  }
+
+  Future<void> _refreshSessions() async {
+    final dashboardProvider = context.read<DashboardProvider>();
+    await _loadNextPage(reset: true);
+    if (!mounted) return;
+    if (!dashboardProvider.isLoading) {
+      await dashboardProvider.refresh();
+    }
+  }
+
+  void _onSessionsScroll() {
+    if (!_sessionsScrollController.hasClients) return;
+    if (_isLoadingMore || _isInitialLoading || !_hasMoreSessions) return;
+
+    final position = _sessionsScrollController.position;
+    if (position.extentAfter < _loadMoreThresholdPx) {
+      _loadNextPage();
+    }
+  }
+
+  Future<void> _loadNextPage({bool reset = false}) async {
+    if (_isLoadingMore) return;
+    if (!reset && !_hasMoreSessions) return;
+
+    final meetingProvider = context.read<MeetingProvider>();
+
+    if (reset) {
+      _skip = 0;
+      _hasMoreSessions = true;
+      _pagedSessions.clear();
+      if (mounted) {
+        setState(() {
+          _isInitialLoading = true;
+        });
+      }
+    }
+
+    _isLoadingMore = true;
+    if (mounted && !reset) {
+      setState(() {});
+    }
+
+    try {
+      await meetingProvider.loadSessions(limit: _pageSize, skip: _skip);
+      final chunk = meetingProvider.sessions;
+
+      if (reset) {
+        _pagedSessions.addAll(chunk);
+      } else {
+        final existingIds = _pagedSessions.map((s) => s.id).toSet();
+        for (final session in chunk) {
+          if (!existingIds.contains(session.id)) {
+            _pagedSessions.add(session);
+          }
+        }
+      }
+
+      _skip = _pagedSessions.length;
+      _hasMoreSessions = chunk.length >= _pageSize;
+    } finally {
+      _isLoadingMore = false;
+      if (mounted) {
+        setState(() {
+          _isInitialLoading = false;
+        });
+      }
+    }
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // Reload sessions when navigating back to this page
-    // This ensures newly saved sessions appear immediately
-    // Use a flag to prevent multiple reloads
-    if (mounted) {
-      WidgetsBinding.instance.addPostFrameCallback((_) async {
-        if (!mounted) return;
-        final meetingProvider = context.read<MeetingProvider>();
-        final dashboardProvider = context.read<DashboardProvider>();
-        // Only reload if we have an auth token (user is logged in)
-        final authProvider = context.read<AuthProvider>();
-        if (authProvider.token != null && authProvider.token!.isNotEmpty) {
-          await meetingProvider.loadSessions();
-          if (!mounted) return;
-          if (!dashboardProvider.isLoading) {
-            await dashboardProvider.refresh();
-          }
-        }
-      });
-    }
+    // Keep session list fresh when this page becomes active again.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      final authProvider = context.read<AuthProvider>();
+      if (authProvider.token != null && authProvider.token!.isNotEmpty && !_isInitialLoading) {
+        await _refreshSessions();
+      }
+    });
   }
 
   String _formatDate(DateTime date) {
@@ -653,11 +738,37 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildSessionsList(Map<String, List<MeetingSession>> grouped, List<String> dateKeys, MeetingProvider provider) {
     return RefreshIndicator(
-      onRefresh: () => provider.loadSessions(),
+      onRefresh: _refreshSessions,
       child: ListView.builder(
+        controller: _sessionsScrollController,
         padding: const EdgeInsets.symmetric(vertical: 8),
-        itemCount: dateKeys.length,
+        itemCount: dateKeys.length + 1,
         itemBuilder: (context, dateIndex) {
+          if (dateIndex == dateKeys.length) {
+            if (_isLoadingMore) {
+              return const Padding(
+                padding: EdgeInsets.symmetric(vertical: 24),
+                child: Center(child: CircularProgressIndicator()),
+              );
+            }
+
+            if (!_hasMoreSessions && _pagedSessions.isNotEmpty) {
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                child: Center(
+                  child: Text(
+                    'All meetings loaded',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.55),
+                        ),
+                  ),
+                ),
+              );
+            }
+
+            return const SizedBox.shrink();
+          }
+
           final dateKey = dateKeys[dateIndex];
           final dateSessions = grouped[dateKey]!;
           return Column(
@@ -699,7 +810,7 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     return Consumer<MeetingProvider>(
       builder: (context, provider, child) {
-        final sessions = provider.sessions;
+        final sessions = _pagedSessions;
         final grouped = _groupSessionsByDate(sessions);
         final dateKeys = _getSortedDateKeys(grouped);
 
@@ -860,25 +971,9 @@ class _HomePageState extends State<HomePage> {
             const Divider(height: 1),
             // Sessions list
             Expanded(
-              child: provider.isLoading && sessions.isEmpty
+              child: _isInitialLoading && sessions.isEmpty
                   ? const Center(child: CircularProgressIndicator())
-                  : provider.isLoading && sessions.isNotEmpty
-                      ? Stack(
-                          children: [
-                            // Show existing sessions with reduced opacity
-                            Opacity(
-                              opacity: 0.5,
-                              child: IgnorePointer(
-                                child: _buildSessionsList(grouped, dateKeys, provider),
-                              ),
-                            ),
-                            // Show loading overlay
-                            const Center(
-                              child: CircularProgressIndicator(),
-                            ),
-                          ],
-                        )
-                      : grouped.isEmpty
+                  : grouped.isEmpty
                       ? Center(
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
@@ -890,14 +985,18 @@ class _HomePageState extends State<HomePage> {
                               ),
                               const SizedBox(height: 16),
                               Text(
-                                'No meetings yet',
+                                provider.errorMessage.isNotEmpty
+                                ? 'Unable to load meetings'
+                                : 'No meetings yet',
                                 style: Theme.of(context).textTheme.titleLarge?.copyWith(
                                       color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
                                     ),
                               ),
                               const SizedBox(height: 8),
                               Text(
-                                'Start your first meeting to get started',
+                                provider.errorMessage.isNotEmpty
+                                ? provider.errorMessage
+                                : 'Start your first meeting to get started',
                                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                                       color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
                                     ),

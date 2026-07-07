@@ -1,10 +1,18 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:http/http.dart' as http;
 import '../models/meeting_session.dart';
 import '../config/app_config.dart';
 import 'http_client_service.dart';
 
 class MeetingStorageService {
+  static const Duration _requestTimeout = Duration(seconds: 18);
+  static const List<Duration> _retryDelays = <Duration>[
+    Duration(milliseconds: 700),
+    Duration(milliseconds: 1400),
+  ];
+
   String? _authToken;
   
   String? get authToken => _authToken;
@@ -30,6 +38,42 @@ class MeetingStorageService {
     return '$cleanBase$cleanPath';
   }
 
+  bool _isRetryableStatus(int statusCode) {
+    return statusCode == 408 ||
+        statusCode == 429 ||
+        statusCode == 500 ||
+        statusCode == 502 ||
+        statusCode == 503 ||
+        statusCode == 504;
+  }
+
+  bool _isRetryableError(Object error) {
+    return error is TimeoutException ||
+        error is SocketException ||
+        error is http.ClientException;
+  }
+
+  Future<http.Response> _sendWithRetry(Future<http.Response> Function() request) async {
+    for (var attempt = 0; attempt <= _retryDelays.length; attempt++) {
+      try {
+        final response = await request().timeout(_requestTimeout);
+        final shouldRetry = _isRetryableStatus(response.statusCode) && attempt < _retryDelays.length;
+        if (!shouldRetry) {
+          return response;
+        }
+      } catch (e) {
+        final canRetry = _isRetryableError(e) && attempt < _retryDelays.length;
+        if (!canRetry) {
+          rethrow;
+        }
+      }
+
+      await Future.delayed(_retryDelays[attempt]);
+    }
+
+    throw Exception('Request failed after retries');
+  }
+
   Future<MeetingSession> saveSession(MeetingSession session) async {
     try {
       final url = _getApiUrl('/api/sessions');
@@ -41,11 +85,11 @@ class MeetingStorageService {
       
       if (isValidObjectId) {
         // Try to update existing session
-        final response = await HttpClientService.client.put(
-          Uri.parse('$url/${session.id}'),
-          headers: _getHeaders(),
-          body: jsonEncode(body),
-        );
+        final response = await _sendWithRetry(() => HttpClientService.client.put(
+              Uri.parse('$url/${session.id}'),
+              headers: _getHeaders(),
+              body: jsonEncode(body),
+            ));
 
         if (response.statusCode == 201 || response.statusCode == 200) {
           // Successfully created or updated
@@ -53,11 +97,11 @@ class MeetingStorageService {
           return MeetingSession.fromJson(data);
         } else if (response.statusCode == 404) {
           // Session doesn't exist, create it
-          final createResponse = await HttpClientService.client.post(
-            Uri.parse(url),
-            headers: _getHeaders(),
-            body: jsonEncode(body),
-          );
+          final createResponse = await _sendWithRetry(() => HttpClientService.client.post(
+                Uri.parse(url),
+                headers: _getHeaders(),
+                body: jsonEncode(body),
+              ));
 
           if (createResponse.statusCode != 201) {
             final error = jsonDecode(createResponse.body)['error'] ?? 'Failed to create session';
@@ -71,11 +115,11 @@ class MeetingStorageService {
         }
       } else {
         // Not a valid ObjectId, create new session
-        final createResponse = await HttpClientService.client.post(
-          Uri.parse(url),
-          headers: _getHeaders(),
-          body: jsonEncode(body),
-        );
+        final createResponse = await _sendWithRetry(() => HttpClientService.client.post(
+              Uri.parse(url),
+              headers: _getHeaders(),
+              body: jsonEncode(body),
+            ));
 
         if (createResponse.statusCode != 201) {
           final error = jsonDecode(createResponse.body)['error'] ?? 'Failed to create session';
@@ -92,10 +136,10 @@ class MeetingStorageService {
   Future<MeetingSession?> loadSession(String sessionId) async {
     try {
       final url = _getApiUrl('/api/sessions/$sessionId');
-      final response = await HttpClientService.client.get(
-        Uri.parse(url),
-        headers: _getHeaders(),
-      );
+      final response = await _sendWithRetry(() => HttpClientService.client.get(
+            Uri.parse(url),
+            headers: _getHeaders(),
+          ));
 
       if (response.statusCode == 404) {
         return null;
@@ -131,10 +175,10 @@ class MeetingStorageService {
         },
       );
       
-      final response = await HttpClientService.client.get(
-        uri,
-        headers: _getHeaders(),
-      );
+      final response = await _sendWithRetry(() => HttpClientService.client.get(
+            uri,
+            headers: _getHeaders(),
+          ));
 
       if (response.statusCode == 401) {
         throw Exception('Authentication failed. Please sign in again.');
@@ -177,10 +221,10 @@ class MeetingStorageService {
         },
       );
       
-      final response = await HttpClientService.client.get(
-        uri,
-        headers: _getHeaders(),
-      );
+      final response = await _sendWithRetry(() => HttpClientService.client.get(
+            uri,
+            headers: _getHeaders(),
+          ));
 
       if (response.statusCode == 401) {
         throw Exception('Authentication failed. Please sign in again.');
@@ -201,10 +245,10 @@ class MeetingStorageService {
   Future<void> deleteSession(String sessionId) async {
     try {
       final url = _getApiUrl('/api/sessions/$sessionId');
-      final response = await HttpClientService.client.delete(
-        Uri.parse(url),
-        headers: _getHeaders(),
-      );
+      final response = await _sendWithRetry(() => HttpClientService.client.delete(
+            Uri.parse(url),
+            headers: _getHeaders(),
+          ));
 
       if (response.statusCode == 404) {
         // Session doesn't exist, consider it deleted

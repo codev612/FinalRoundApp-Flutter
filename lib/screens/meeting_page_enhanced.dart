@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -232,6 +233,10 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
       final authProvider = context.read<AuthProvider>();
       _speechProvider = context.read<SpeechToTextProvider>();
       _meetingProvider = context.read<MeetingProvider>();
+
+      // Reset previous transient errors when entering the meeting page.
+      _speechProvider!.clearError();
+      _meetingProvider!.clearError();
 
       await _loadAiModel();
       await _loadAutoAskUseScreen();
@@ -3366,7 +3371,9 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
             final cleaned = rawErr.replaceFirst(RegExp(r'^\s*Exception:\s*'), '').trim();
-            final msg = cleaned.isNotEmpty ? cleaned : 'AI request failed';
+            final msg = ErrorMessageHelper.toUserFriendly(
+              cleaned.isNotEmpty ? cleaned : rawErr,
+            );
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text(msg),
@@ -3824,11 +3831,36 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                                   const Icon(Icons.error, color: Colors.red),
                                   const SizedBox(width: 8),
                                   Expanded(
-                                    child: Text(
-                                      speechProvider.errorMessage.isNotEmpty
-                                          ? speechProvider.errorMessage
-                                          : meetingProvider.errorMessage,
-                                      style: TextStyle(color: Colors.red.shade900),
+                                    child: Builder(
+                                      builder: (context) {
+                                        final displayMessage = speechProvider.errorMessage.isNotEmpty
+                                            ? speechProvider.errorMessage
+                                            : meetingProvider.errorMessage;
+                                        final isGeneric = displayMessage ==
+                                            'An error occurred. Please try again.';
+                                        final raw = meetingProvider.lastRawError.trim();
+                                        final showRaw = kDebugMode && isGeneric && raw.isNotEmpty;
+
+                                        return Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              displayMessage,
+                                              style: TextStyle(color: Colors.red.shade900),
+                                            ),
+                                            if (showRaw) ...[
+                                              const SizedBox(height: 4),
+                                              Text(
+                                                'Debug: $raw',
+                                                style: TextStyle(
+                                                  color: Colors.red.shade700,
+                                                  fontSize: 12,
+                                                ),
+                                              ),
+                                            ],
+                                          ],
+                                        );
+                                      },
                                     ),
                                   ),
                                 ],
