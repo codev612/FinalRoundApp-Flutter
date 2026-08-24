@@ -155,7 +155,14 @@ void main() async {
     });
   }
   
-  runApp(const MyApp());
+  // Flutter Windows accessibility bridge has a long-standing AXTree bug that
+  // spams "will not be in the tree" when menus/tooltips open. Desktop app
+  // doesn't need screen-reader semantics, so disable them on Windows.
+  runApp(
+    Platform.isWindows
+        ? const ExcludeSemantics(child: MyApp())
+        : const MyApp(),
+  );
   
   // Check for updates after app is fully initialized (non-blocking)
   Future.delayed(const Duration(seconds: 2), () async {

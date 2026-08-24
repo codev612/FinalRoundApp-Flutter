@@ -1580,18 +1580,55 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     final plan = info?.plan.trim().toLowerCase() ?? '';
 
     if (allowed.isEmpty) {
-      return <String>['gpt-5.4', 'gpt-5.3', 'gpt-5.2', 'gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'];
+      return <String>['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.4', 'gpt-5.3', 'gpt-5.2', 'gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'];
     }
 
-    // Temporary client-side augmentation for paid plans until backend allowedModels includes newest models.
+    // Keep newest models selectable for paid plans even if a stale production
+    // deploy has not yet refreshed allowedModels from PLAN_CONFIGS.
     if (plan == 'pro' || plan == 'pro_plus') {
       final merged = <String>[...allowed];
-      if (!merged.contains('gpt-5.4')) merged.insert(0, 'gpt-5.4');
-      if (!merged.contains('gpt-5.3')) merged.insert(1, 'gpt-5.3');
+      void ensure(String model, int index) {
+        if (!merged.contains(model)) {
+          merged.insert(index.clamp(0, merged.length), model);
+        }
+      }
+      ensure('gpt-5.6-sol', 0);
+      ensure('gpt-5.6-terra', 1);
+      ensure('gpt-5.6-luna', 2);
       return merged;
     }
 
     return allowed;
+  }
+
+  Widget _buildModelMenuRow(String value, String label) {
+    final selected = _selectedAiModel.trim().toLowerCase() == value.trim().toLowerCase();
+    final theme = Theme.of(context);
+    final color = selected ? theme.colorScheme.primary : theme.colorScheme.onSurface;
+
+    return Row(
+      children: [
+        SizedBox(
+          width: 18,
+          child: selected
+              ? Icon(Icons.check, size: 16, color: color)
+              : const SizedBox.shrink(),
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              fontSize: 13,
+              fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
+              color: color,
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   List<PopupMenuEntry<String>> _buildModelMenuItems() {
@@ -1603,12 +1640,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
         value: 'auto',
         height: _modelMenuItemHeight,
         padding: const EdgeInsets.symmetric(horizontal: 12),
-        child: Text(
-          'AUTO',
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontSize: 13),
-        ),
+        child: _buildModelMenuRow('auto', 'AUTO'),
       ),
     );
     items.add(const PopupMenuDivider());
@@ -1618,12 +1650,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
           value: m,
           height: _modelMenuItemHeight,
           padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Text(
-            _formatModelLabel(m),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontSize: 13),
-          ),
+          child: _buildModelMenuRow(m, _formatModelLabel(m)),
         ),
       );
     }
@@ -1633,18 +1660,22 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
   Widget _buildModelMenuButton({required bool disabled, required ButtonStyle style}) {
     final label = _selectedAiModel.trim().isEmpty ? 'Model' : _selectedAiModel.trim();
     final displayLabel = _formatModelLabel(label);
-    
-    return Tooltip(
-      message: 'Current model: $displayLabel\nClick to change',
+
+    // Nested Tooltip + PopupMenuButton triggers Flutter Windows AXTree spam
+    // (accessibility_bridge "will not be in the tree"). Keep a single tooltip
+    // and exclude semantics for this control on desktop.
+    return ExcludeSemantics(
       child: PopupMenuButton<String>(
         enabled: !disabled,
-        tooltip: 'Select model',
+        // Empty tooltip avoids Material Tooltip overlay, which on Windows
+        // often floods the console with AXTree accessibility_bridge errors.
+        tooltip: '',
         onSelected: (value) async {
           await _setAiModel(value);
         },
         itemBuilder: (context) => _buildModelMenuItems(),
         child: Container(
-          width: 104,
+          width: 132,
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.7),

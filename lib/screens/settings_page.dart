@@ -1703,7 +1703,7 @@ class _PlanUsageSettingsState extends State<_PlanUsageSettings> {
     aiTokensPerMonth: 1300000,
     aiRequestsPerMonth: 3000,
     canUseSummary: true,
-    allowedModels: ['gpt-5.4', 'gpt-5.3', 'gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'],
+    allowedModels: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.4', 'gpt-5.3', 'gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'],
   );
   static const _PlanOffer _proPlusPlan = _PlanOffer(
     key: 'pro_plus',
@@ -1713,7 +1713,7 @@ class _PlanUsageSettingsState extends State<_PlanUsageSettings> {
     aiTokensPerMonth: 3000000,
     aiRequestsPerMonth: 15000,
     canUseSummary: true,
-    allowedModels: ['gpt-5.4', 'gpt-5.3', 'gpt-5.2', 'gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'],
+    allowedModels: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.4', 'gpt-5.3', 'gpt-5.2', 'gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'],
   );
 
   List<_PlanOffer> _allPlans() => const [_freePlan, _proPlan, _proPlusPlan];
