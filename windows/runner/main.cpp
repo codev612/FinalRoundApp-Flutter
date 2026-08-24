@@ -2,6 +2,8 @@
 #include <flutter/flutter_view_controller.h>
 #include <windows.h>
 
+#include <vector>
+
 #include "flutter_window.h"
 #include "utils.h"
 
@@ -10,42 +12,62 @@ static const wchar_t* kMutexName = L"Global\\FinalRoundAppMutex_SingleInstance";
 static const wchar_t* kWindowClassName = L"FLUTTER_RUNNER_WIN32_WINDOW";
 static const wchar_t* kWindowTitle = L"FinalRound";
 
-// Callback to find existing FinalRound window
+// Callback to collect existing FinalRound windows
 BOOL CALLBACK EnumWindowsCallback(HWND hwnd, LPARAM lParam) {
   wchar_t className[256];
-  wchar_t windowTitle[256];
-  
-  if (::GetClassNameW(hwnd, className, 256) && 
-      ::GetWindowTextW(hwnd, windowTitle, 256)) {
-    if (wcscmp(className, kWindowClassName) == 0 && 
-        wcsstr(windowTitle, kWindowTitle) != nullptr) {
-      HWND* pFoundHwnd = reinterpret_cast<HWND*>(lParam);
-      *pFoundHwnd = hwnd;
-      return FALSE;
-    }
+  if (::GetClassNameW(hwnd, className, 256) &&
+      wcscmp(className, kWindowClassName) == 0) {
+    auto* windows = reinterpret_cast<std::vector<HWND>*>(lParam);
+    windows->push_back(hwnd);
   }
   return TRUE;
 }
 
-// Bring existing window to foreground
+// Show a window (including one hidden to the tray) and bring it to the front.
+void ActivateExistingWindow(HWND hwnd) {
+  if (!::IsWindow(hwnd)) {
+    return;
+  }
+
+  if (::IsIconic(hwnd) || !::IsWindowVisible(hwnd)) {
+    ::ShowWindow(hwnd, SW_RESTORE);
+  } else {
+    ::ShowWindow(hwnd, SW_SHOW);
+  }
+
+  HWND foreground = ::GetForegroundWindow();
+  const DWORD this_thread = ::GetCurrentThreadId();
+  DWORD foreground_thread = 0;
+  if (foreground) {
+    foreground_thread = ::GetWindowThreadProcessId(foreground, nullptr);
+  }
+  const DWORD target_thread = ::GetWindowThreadProcessId(hwnd, nullptr);
+
+  if (foreground_thread != 0 && foreground_thread != this_thread) {
+    ::AttachThreadInput(this_thread, foreground_thread, TRUE);
+  }
+  if (target_thread != 0 && target_thread != this_thread) {
+    ::AttachThreadInput(this_thread, target_thread, TRUE);
+  }
+
+  ::BringWindowToTop(hwnd);
+  ::SetForegroundWindow(hwnd);
+  ::SetActiveWindow(hwnd);
+
+  if (target_thread != 0 && target_thread != this_thread) {
+    ::AttachThreadInput(this_thread, target_thread, FALSE);
+  }
+  if (foreground_thread != 0 && foreground_thread != this_thread) {
+    ::AttachThreadInput(this_thread, foreground_thread, FALSE);
+  }
+}
+
+// Bring existing windows to the foreground without showing a dialog.
 void BringExistingWindowToFront() {
-  HWND existingWindow = nullptr;
-  ::EnumWindows(EnumWindowsCallback, reinterpret_cast<LPARAM>(&existingWindow));
-  
-  if (existingWindow) {
-    if (::IsIconic(existingWindow)) {
-      ::ShowWindow(existingWindow, SW_RESTORE);
-    }
-    ::SetForegroundWindow(existingWindow);
-    ::BringWindowToTop(existingWindow);
-    
-    FLASHWINFO fi;
-    fi.cbSize = sizeof(FLASHWINFO);
-    fi.hwnd = existingWindow;
-    fi.dwFlags = FLASHW_ALL | FLASHW_TIMERNOFG;
-    fi.uCount = 3;
-    fi.dwTimeout = 0;
-    ::FlashWindowEx(&fi);
+  std::vector<HWND> windows;
+  ::EnumWindows(EnumWindowsCallback, reinterpret_cast<LPARAM>(&windows));
+  for (HWND hwnd : windows) {
+    ActivateExistingWindow(hwnd);
   }
 }
 
@@ -60,10 +82,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   if (::GetLastError() == ERROR_ALREADY_EXISTS) {
     ::CloseHandle(hMutex);
     BringExistingWindowToFront();
-    ::MessageBoxW(nullptr, 
-      L"FinalRound is already running.\n\nThe existing window has been brought to the foreground.",
-      L"FinalRound Already Running", 
-      MB_OK | MB_ICONINFORMATION);
     return EXIT_SUCCESS;
   }
 

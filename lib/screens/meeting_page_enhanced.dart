@@ -1572,8 +1572,6 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     return model;
   }
 
-  static const double _modelMenuItemHeight = 36.0;
-
   List<String> _effectiveAllowedModels() {
     final info = _billingInfo;
     final allowed = info?.allowedModels ?? const <String>[];
@@ -1601,110 +1599,226 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     return allowed;
   }
 
-  Widget _buildModelMenuRow(String value, String label) {
-    final selected = _selectedAiModel.trim().toLowerCase() == value.trim().toLowerCase();
-    final theme = Theme.of(context);
-    final color = selected ? theme.colorScheme.primary : theme.colorScheme.onSurface;
+  Future<void> _openModelSearchPicker(BuildContext buttonContext) async {
+    final renderObject = buttonContext.findRenderObject();
+    if (renderObject is! RenderBox || !renderObject.hasSize) return;
 
-    return Row(
-      children: [
-        SizedBox(
-          width: 18,
-          child: selected
-              ? Icon(Icons.check, size: 16, color: color)
-              : const SizedBox.shrink(),
-        ),
-        const SizedBox(width: 6),
-        Expanded(
-          child: Text(
-            label,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              fontSize: 13,
-              fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
-              color: color,
+    final overlayState = Overlay.of(buttonContext, rootOverlay: true);
+    final overlay = overlayState.context.findRenderObject();
+    if (overlay is! RenderBox) return;
+
+    final buttonOffset = renderObject.localToGlobal(Offset.zero, ancestor: overlay);
+    final buttonSize = renderObject.size;
+    final overlaySize = overlay.size;
+    const menuWidth = 280.0;
+    const menuHeight = 340.0;
+
+    var left = buttonOffset.dx;
+    if (left + menuWidth > overlaySize.width - 8) {
+      left = overlaySize.width - menuWidth - 8;
+    }
+    if (left < 8) left = 8;
+
+    var top = buttonOffset.dy + buttonSize.height + 4;
+    if (top + menuHeight > overlaySize.height - 8) {
+      top = buttonOffset.dy - menuHeight - 4;
+    }
+    if (top < 8) top = 8;
+
+    final models = <String>['auto', ..._effectiveAllowedModels()];
+    final selected = await showDialog<String>(
+      context: context,
+      useRootNavigator: true,
+      barrierColor: Colors.black.withValues(alpha: 0.15),
+      builder: (dialogContext) {
+        final theme = Theme.of(context);
+        return Material(
+          type: MaterialType.transparency,
+          child: SizedBox.expand(
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => Navigator.pop(dialogContext),
+                  ),
+                ),
+                Positioned(
+                  left: left,
+                  top: top,
+                  width: menuWidth,
+                  height: menuHeight,
+                  child: Material(
+                    elevation: 12,
+                    color: theme.colorScheme.surface,
+                    shadowColor: Colors.black54,
+                    borderRadius: BorderRadius.circular(10),
+                    clipBehavior: Clip.antiAlias,
+                    child: _ModelSearchPickerPanel(
+                      models: models,
+                      selectedModel: _selectedAiModel,
+                      formatLabel: _formatModelLabel,
+                      onSelected: (value) => Navigator.pop(dialogContext, value),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
-        ),
-      ],
+        );
+      },
     );
+
+    if (selected != null && mounted) {
+      await _setAiModel(selected);
+    }
   }
 
-  List<PopupMenuEntry<String>> _buildModelMenuItems() {
-    final models = _effectiveAllowedModels();
+  Future<void> _openModeSearchPicker({
+    required BuildContext buttonContext,
+    required List<ModeDisplay> displays,
+    required String currentKey,
+    required MeetingProvider meetingProvider,
+  }) async {
+    final renderObject = buttonContext.findRenderObject();
+    if (renderObject is! RenderBox || !renderObject.hasSize) return;
 
-    final items = <PopupMenuEntry<String>>[];
-    items.add(
-      PopupMenuItem(
-        value: 'auto',
-        height: _modelMenuItemHeight,
-        padding: const EdgeInsets.symmetric(horizontal: 12),
-        child: _buildModelMenuRow('auto', 'AUTO'),
-      ),
-    );
-    items.add(const PopupMenuDivider());
-    for (final m in models) {
-      items.add(
-        PopupMenuItem(
-          value: m,
-          height: _modelMenuItemHeight,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: _buildModelMenuRow(m, _formatModelLabel(m)),
-        ),
-      );
+    final overlayState = Overlay.of(buttonContext, rootOverlay: true);
+    final overlay = overlayState.context.findRenderObject();
+    if (overlay is! RenderBox) return;
+
+    final buttonOffset = renderObject.localToGlobal(Offset.zero, ancestor: overlay);
+    final buttonSize = renderObject.size;
+    final overlaySize = overlay.size;
+    const menuWidth = 280.0;
+    const menuHeight = 340.0;
+
+    var left = buttonOffset.dx;
+    if (left + menuWidth > overlaySize.width - 8) {
+      left = overlaySize.width - menuWidth - 8;
     }
-    return items;
+    if (left < 8) left = 8;
+
+    var top = buttonOffset.dy + buttonSize.height + 4;
+    if (top + menuHeight > overlaySize.height - 8) {
+      top = buttonOffset.dy - menuHeight - 4;
+    }
+    if (top < 8) top = 8;
+
+    final selected = await showDialog<String>(
+      context: context,
+      useRootNavigator: true,
+      barrierColor: Colors.black.withValues(alpha: 0.15),
+      builder: (dialogContext) {
+        final theme = Theme.of(context);
+        return Material(
+          type: MaterialType.transparency,
+          child: SizedBox.expand(
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => Navigator.pop(dialogContext),
+                  ),
+                ),
+                Positioned(
+                  left: left,
+                  top: top,
+                  width: menuWidth,
+                  height: menuHeight,
+                  child: Material(
+                    elevation: 12,
+                    color: theme.colorScheme.surface,
+                    shadowColor: Colors.black54,
+                    borderRadius: BorderRadius.circular(10),
+                    clipBehavior: Clip.antiAlias,
+                    child: _ModeSearchPickerPanel(
+                      displays: displays,
+                      selectedModeKey: currentKey,
+                      onSelected: (value) => Navigator.pop(dialogContext, value),
+                      onManageModes: () => Navigator.pop(dialogContext, '__manage_modes__'),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    if (!mounted || selected == null) return;
+
+    if (selected == '__manage_modes__') {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (context) => const ManageModePage()),
+      );
+      if (mounted && _modeService != null) {
+        setState(() {
+          _modeDisplaysFuture = _modeService!.getCustomOnlyModeDisplays();
+        });
+      }
+      return;
+    }
+
+    if (meetingProvider.currentSession != null) {
+      meetingProvider.updateCurrentSessionModeKey(selected);
+    }
   }
 
   Widget _buildModelMenuButton({required bool disabled, required ButtonStyle style}) {
     final label = _selectedAiModel.trim().isEmpty ? 'Model' : _selectedAiModel.trim();
     final displayLabel = _formatModelLabel(label);
 
-    // Nested Tooltip + PopupMenuButton triggers Flutter Windows AXTree spam
-    // (accessibility_bridge "will not be in the tree"). Keep a single tooltip
-    // and exclude semantics for this control on desktop.
+    // Nested Tooltip triggers Flutter Windows AXTree spam. Exclude semantics
+    // for this control on desktop and use a custom searchable picker instead
+    // of PopupMenuButton so model/profile names can be filtered by typing.
     return ExcludeSemantics(
-      child: PopupMenuButton<String>(
-        enabled: !disabled,
-        // Empty tooltip avoids Material Tooltip overlay, which on Windows
-        // often floods the console with AXTree accessibility_bridge errors.
-        tooltip: '',
-        onSelected: (value) async {
-          await _setAiModel(value);
-        },
-        itemBuilder: (context) => _buildModelMenuItems(),
-        child: Container(
-          width: 132,
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.7),
+      child: Builder(
+        builder: (buttonContext) {
+          return InkWell(
+            onTap: disabled ? null : () => _openModelSearchPicker(buttonContext),
             borderRadius: BorderRadius.circular(7),
-            border: Border.all(
-              color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
-              width: 1,
-            ),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.tune, size: 14),
-              const SizedBox(width: 4),
-              Expanded(
-                child: Text(
-                  displayLabel,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                    color: Theme.of(context).colorScheme.onSurface,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                  maxLines: 1,
+            child: Container(
+              width: 132,
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.7),
+                borderRadius: BorderRadius.circular(7),
+                border: Border.all(
+                  color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
+                  width: 1,
                 ),
               ),
-            ],
-          ),
-        ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.tune, size: 14),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      displayLabel,
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                        color: Theme.of(context).colorScheme.onSurface,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
+                    ),
+                  ),
+                  Icon(
+                    Icons.arrow_drop_down,
+                    size: 16,
+                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -3628,7 +3742,6 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                               Consumer<MeetingProvider>(
                                 builder: (context, meetingProvider, child) {
                                   final currentKey = session?.modeKey ?? 'general';
-                                  final navigatorContext = context;
                                   if (_modeDisplaysFuture == null) {
                                     final auth = context.read<AuthProvider>().token;
                                     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -3680,88 +3793,51 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
                                           ? 'General'
                                           : displays.firstWhere((d) => d.modeKey == currentKey).label;
                                       final theme = Theme.of(context);
-                                      return Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                        decoration: BoxDecoration(
-                                          color: theme.colorScheme.surfaceContainerHighest,
-                                          borderRadius: BorderRadius.circular(8),
-                                          border: Border.all(color: theme.colorScheme.outline.withValues(alpha: 0.3), width: 1),
-                                        ),
-                                        child: PopupMenuButton<String?>(
-                                          child: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              Text(
-                                                currentLabel,
-                                                style: TextStyle(
-                                                  color: theme.colorScheme.onSurface,
-                                                  fontSize: 14,
-                                                  fontWeight: FontWeight.w500,
-                                                ),
+                                      return Builder(
+                                        builder: (buttonContext) {
+                                          return Material(
+                                            color: theme.colorScheme.surfaceContainerHighest,
+                                            borderRadius: BorderRadius.circular(8),
+                                            child: InkWell(
+                                              borderRadius: BorderRadius.circular(8),
+                                              onTap: () => _openModeSearchPicker(
+                                                buttonContext: buttonContext,
+                                                displays: displays,
+                                                currentKey: currentKey,
+                                                meetingProvider: meetingProvider,
                                               ),
-                                              const SizedBox(width: 4),
-                                              Icon(Icons.arrow_drop_down, color: theme.colorScheme.onSurface, size: 20),
-                                            ],
-                                          ),
-                                          color: theme.colorScheme.surfaceContainerHighest,
-                                          itemBuilder: (BuildContext menuContext) {
-                                            final theme = Theme.of(context);
-                                            final items = <PopupMenuEntry<String?>>[];
-                                            for (final d in displays) {
-                                              items.add(
-                                                PopupMenuItem<String?>(
-                                                  value: d.modeKey,
-                                                  child: Row(
-                                                    mainAxisSize: MainAxisSize.min,
-                                                    children: [
-                                                      Icon(d.icon, size: 18, color: theme.colorScheme.onSurface),
-                                                      const SizedBox(width: 8),
-                                                      Text(d.label, style: TextStyle(color: theme.colorScheme.onSurface)),
-                                                      if (d.modeKey == currentKey) ...[
-                                                        const Spacer(),
-                                                        Icon(Icons.check, color: theme.colorScheme.primary, size: 18),
-                                                      ],
-                                                    ],
+                                              child: Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                                decoration: BoxDecoration(
+                                                  borderRadius: BorderRadius.circular(8),
+                                                  border: Border.all(
+                                                    color: theme.colorScheme.outline.withValues(alpha: 0.3),
+                                                    width: 1,
                                                   ),
                                                 ),
-                                              );
-                                            }
-                                            items.add(PopupMenuDivider(color: theme.colorScheme.outline.withValues(alpha: 0.2)));
-                                            items.add(
-                                              PopupMenuItem<String?>(
-                                                enabled: false,
-                                                child: InkWell(
-                                                  onTap: () async {
-                                                    Navigator.pop(menuContext);
-                                                    await Navigator.push(
-                                                      navigatorContext,
-                                                      MaterialPageRoute(builder: (context) => const ManageModePage()),
-                                                    );
-                                                    if (mounted && _modeService != null) {
-                                                      setState(() {
-                                                        _modeDisplaysFuture = _modeService!.getCustomOnlyModeDisplays();
-                                                      });
-                                                    }
-                                                  },
-                                                  child: Row(
-                                                    mainAxisSize: MainAxisSize.min,
-                                                    children: [
-                                                      Icon(Icons.settings, size: 18, color: theme.colorScheme.onSurface),
-                                                      const SizedBox(width: 8),
-                                                      Text('Manage mode', style: TextStyle(color: theme.colorScheme.onSurface)),
-                                                    ],
-                                                  ),
+                                                child: Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    Text(
+                                                      currentLabel,
+                                                      style: TextStyle(
+                                                        color: theme.colorScheme.onSurface,
+                                                        fontSize: 14,
+                                                        fontWeight: FontWeight.w500,
+                                                      ),
+                                                    ),
+                                                    const SizedBox(width: 4),
+                                                    Icon(
+                                                      Icons.arrow_drop_down,
+                                                      color: theme.colorScheme.onSurface,
+                                                      size: 20,
+                                                    ),
+                                                  ],
                                                 ),
                                               ),
-                                            );
-                                            return items;
-                                          },
-                                          onSelected: (String? selectedKey) {
-                                            if (selectedKey != null && meetingProvider.currentSession != null) {
-                                              meetingProvider.updateCurrentSessionModeKey(selectedKey);
-                                            }
-                                          },
-                                        ),
+                                            ),
+                                          );
+                                        },
                                       );
                                     },
                                   );
@@ -6464,5 +6540,330 @@ class _CodeBlockBuilder extends MarkdownElementBuilder {
       }
     }
     return spans;
+  }
+}
+
+class _ModelSearchPickerPanel extends StatefulWidget {
+  final List<String> models;
+  final String selectedModel;
+  final String Function(String) formatLabel;
+  final ValueChanged<String> onSelected;
+
+  const _ModelSearchPickerPanel({
+    required this.models,
+    required this.selectedModel,
+    required this.formatLabel,
+    required this.onSelected,
+  });
+
+  @override
+  State<_ModelSearchPickerPanel> createState() => _ModelSearchPickerPanelState();
+}
+
+class _ModelSearchPickerPanelState extends State<_ModelSearchPickerPanel> {
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _searchFocusNode.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _searchFocusNode.dispose();
+    super.dispose();
+  }
+
+  List<String> get _filteredModels {
+    final query = _searchController.text.trim().toLowerCase();
+    if (query.isEmpty) return widget.models;
+    return widget.models.where((model) {
+      final id = model.toLowerCase();
+      final label = widget.formatLabel(model).toLowerCase();
+      return id.contains(query) || label.contains(query);
+    }).toList(growable: false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final filtered = _filteredModels;
+    final fillColor = theme.colorScheme.surfaceContainerHighest;
+    final borderColor = theme.colorScheme.outline.withValues(alpha: 0.55);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
+          child: TextField(
+            controller: _searchController,
+            focusNode: _searchFocusNode,
+            autofocus: true,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              fontSize: 13,
+              color: theme.colorScheme.onSurface,
+            ),
+            cursorColor: theme.colorScheme.primary,
+            decoration: InputDecoration(
+              isDense: true,
+              filled: true,
+              fillColor: fillColor,
+              hintText: 'Search model...',
+              hintStyle: theme.textTheme.bodyMedium?.copyWith(
+                fontSize: 13,
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.45),
+              ),
+              prefixIcon: Icon(
+                Icons.search,
+                size: 18,
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+              ),
+              prefixIconConstraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(color: borderColor),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(color: borderColor),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(color: theme.colorScheme.primary, width: 1.5),
+              ),
+            ),
+            onChanged: (_) => setState(() {}),
+          ),
+        ),
+        Divider(height: 1, color: theme.colorScheme.outline.withValues(alpha: 0.25)),
+        Expanded(
+          child: filtered.isEmpty
+              ? Center(
+                  child: Text(
+                    'No models match',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                    ),
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  itemCount: filtered.length,
+                  itemBuilder: (context, index) {
+                    final model = filtered[index];
+                    final selected =
+                        widget.selectedModel.trim().toLowerCase() == model.trim().toLowerCase();
+                    final color = selected ? theme.colorScheme.primary : theme.colorScheme.onSurface;
+                    return InkWell(
+                      onTap: () => widget.onSelected(model),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        child: Row(
+                          children: [
+                            SizedBox(
+                              width: 18,
+                              child: selected
+                                  ? Icon(Icons.check, size: 16, color: color)
+                                  : const SizedBox.shrink(),
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                widget.formatLabel(model),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  fontSize: 13,
+                                  fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
+                                  color: color,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ModeSearchPickerPanel extends StatefulWidget {
+  final List<ModeDisplay> displays;
+  final String selectedModeKey;
+  final ValueChanged<String> onSelected;
+  final VoidCallback onManageModes;
+
+  const _ModeSearchPickerPanel({
+    required this.displays,
+    required this.selectedModeKey,
+    required this.onSelected,
+    required this.onManageModes,
+  });
+
+  @override
+  State<_ModeSearchPickerPanel> createState() => _ModeSearchPickerPanelState();
+}
+
+class _ModeSearchPickerPanelState extends State<_ModeSearchPickerPanel> {
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _searchFocusNode.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _searchFocusNode.dispose();
+    super.dispose();
+  }
+
+  List<ModeDisplay> get _filteredDisplays {
+    final query = _searchController.text.trim().toLowerCase();
+    if (query.isEmpty) return widget.displays;
+    return widget.displays.where((d) {
+      return d.label.toLowerCase().contains(query) ||
+          d.modeKey.toLowerCase().contains(query);
+    }).toList(growable: false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final filtered = _filteredDisplays;
+    final fillColor = theme.colorScheme.surfaceContainerHighest;
+    final borderColor = theme.colorScheme.outline.withValues(alpha: 0.55);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
+          child: TextField(
+            controller: _searchController,
+            focusNode: _searchFocusNode,
+            autofocus: true,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              fontSize: 13,
+              color: theme.colorScheme.onSurface,
+            ),
+            cursorColor: theme.colorScheme.primary,
+            decoration: InputDecoration(
+              isDense: true,
+              filled: true,
+              fillColor: fillColor,
+              hintText: 'Search profile...',
+              hintStyle: theme.textTheme.bodyMedium?.copyWith(
+                fontSize: 13,
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.45),
+              ),
+              prefixIcon: Icon(
+                Icons.search,
+                size: 18,
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+              ),
+              prefixIconConstraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(color: borderColor),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(color: borderColor),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(color: theme.colorScheme.primary, width: 1.5),
+              ),
+            ),
+            onChanged: (_) => setState(() {}),
+          ),
+        ),
+        Divider(height: 1, color: theme.colorScheme.outline.withValues(alpha: 0.25)),
+        Expanded(
+          child: filtered.isEmpty
+              ? Center(
+                  child: Text(
+                    'No profiles match',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                    ),
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  itemCount: filtered.length,
+                  itemBuilder: (context, index) {
+                    final display = filtered[index];
+                    final selected = display.modeKey == widget.selectedModeKey;
+                    final color = selected ? theme.colorScheme.primary : theme.colorScheme.onSurface;
+                    return InkWell(
+                      onTap: () => widget.onSelected(display.modeKey),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        child: Row(
+                          children: [
+                            Icon(display.icon, size: 18, color: color),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                display.label,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  fontSize: 13,
+                                  fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
+                                  color: color,
+                                ),
+                              ),
+                            ),
+                            if (selected)
+                              Icon(Icons.check, size: 18, color: theme.colorScheme.primary),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        ),
+        Divider(height: 1, color: theme.colorScheme.outline.withValues(alpha: 0.25)),
+        InkWell(
+          onTap: widget.onManageModes,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            child: Row(
+              children: [
+                Icon(Icons.settings, size: 18, color: theme.colorScheme.onSurface),
+                const SizedBox(width: 8),
+                Text(
+                  'Manage mode',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontSize: 13,
+                    color: theme.colorScheme.onSurface,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
   }
 }
