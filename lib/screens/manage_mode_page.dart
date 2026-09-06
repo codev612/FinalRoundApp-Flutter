@@ -72,6 +72,7 @@ class ManageModePage extends StatefulWidget {
 
 class _ManageModePageState extends State<ManageModePage> {
   final MeetingModeService _modeService = MeetingModeService();
+  final TextEditingController _filterController = TextEditingController();
   List<CustomMeetingMode> _customModes = [];
   bool _isLoading = true;
   bool _showingTemplates = false;
@@ -86,6 +87,20 @@ class _ManageModePageState extends State<ManageModePage> {
       _modeService.setAuthToken(context.read<AuthProvider>().token);
       _loadAll();
     });
+  }
+
+  @override
+  void dispose() {
+    _filterController.dispose();
+    super.dispose();
+  }
+
+  List<CustomMeetingMode> get _filteredCustomModes {
+    final query = _filterController.text.trim().toLowerCase();
+    if (query.isEmpty) return _customModes;
+    return _customModes
+        .where((c) => c.label.toLowerCase().contains(query))
+        .toList();
   }
 
   Future<void> _loadAll() async {
@@ -191,6 +206,7 @@ class _ManageModePageState extends State<ManageModePage> {
       _customModes = [..._customModes, result];
       _selected = result;
       _showingTemplates = false;
+      _filterController.clear();
     });
     try {
       await _modeService.addCustomMode(result);
@@ -227,6 +243,7 @@ class _ManageModePageState extends State<ManageModePage> {
       _customModes = [..._customModes, custom];
       _selected = custom;
       _showingTemplates = false;
+      _filterController.clear();
     });
     try {
       await _modeService.addCustomMode(custom);
@@ -422,6 +439,66 @@ class _ManageModePageState extends State<ManageModePage> {
                         ),
                       ),
                       const Divider(height: 1),
+                      if (_customModes.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                          child: TextField(
+                            controller: _filterController,
+                            onChanged: (_) => setState(() {}),
+                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontSize: 13),
+                            decoration: InputDecoration(
+                              isDense: true,
+                              filled: true,
+                              fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                              hintText: 'Filter by mode name',
+                              hintStyle: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    fontSize: 13,
+                                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.45),
+                                  ),
+                              prefixIcon: Icon(
+                                Icons.search,
+                                size: 18,
+                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                              ),
+                              prefixIconConstraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                              suffixIcon: _filterController.text.isNotEmpty
+                                  ? IconButton(
+                                      icon: Icon(
+                                        Icons.clear,
+                                        size: 18,
+                                        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+                                      ),
+                                      tooltip: 'Clear filter',
+                                      onPressed: () {
+                                        _filterController.clear();
+                                        setState(() {});
+                                      },
+                                    )
+                                  : null,
+                              suffixIconConstraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
+                                borderSide: BorderSide(
+                                  color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.55),
+                                ),
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
+                                borderSide: BorderSide(
+                                  color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.55),
+                                ),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
+                                borderSide: BorderSide(
+                                  color: Theme.of(context).colorScheme.primary,
+                                  width: 1.5,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
                       Expanded(
                         child: _customModes.isEmpty
                             ? const Center(
@@ -431,24 +508,35 @@ class _ManageModePageState extends State<ManageModePage> {
                                   style: TextStyle(fontSize: 13),
                                 ),
                               )
-                            : ListView(
-                                padding: const EdgeInsets.only(bottom: 8),
-                                children: _customModes.map((c) {
-                                  final isSelected = !_showingTemplates && _selected?.id == c.id;
-                                  return Material(
-                                    color: Colors.transparent,
-                                    child: ListTile(
-                                      selected: isSelected,
-                                      leading: Icon(c.icon),
-                                      title: Text(c.label),
-                                      onTap: () => setState(() {
-                                        _showingTemplates = false;
-                                        _selected = c;
-                                      }),
+                            : _filteredCustomModes.isEmpty
+                                ? Center(
+                                    child: Text(
+                                      'No modes match',
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+                                      ),
                                     ),
-                                  );
-                                }).toList(),
-                              ),
+                                  )
+                                : ListView(
+                                    padding: const EdgeInsets.only(bottom: 8),
+                                    children: _filteredCustomModes.map((c) {
+                                      final isSelected = !_showingTemplates && _selected?.id == c.id;
+                                      return Material(
+                                        color: Colors.transparent,
+                                        child: ListTile(
+                                          selected: isSelected,
+                                          leading: Icon(c.icon),
+                                          title: Text(c.label),
+                                          onTap: () => setState(() {
+                                            _showingTemplates = false;
+                                            _selected = c;
+                                          }),
+                                        ),
+                                      );
+                                    }).toList(),
+                                  ),
                       ),
                       const Divider(height: 1),
                       Padding(
@@ -921,8 +1009,11 @@ class _NotesTemplateEditorState extends State<_NotesTemplateEditor> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.max,
       children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        Wrap(
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 8,
+          runSpacing: 4,
           children: [
             Text(
               'Drag to reorder. Tap to edit. Changes auto-save.',
