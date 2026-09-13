@@ -1578,7 +1578,7 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
     final plan = info?.plan.trim().toLowerCase() ?? '';
 
     if (allowed.isEmpty) {
-      return <String>['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.4', 'gpt-5.3', 'gpt-5.2', 'gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'];
+      return <String>['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.4', 'gpt-5.3', 'gpt-5.2', 'gpt-5', 'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'];
     }
 
     // Keep newest models selectable for paid plans even if a stale production
@@ -1590,9 +1590,10 @@ class _MeetingPageEnhancedState extends State<MeetingPageEnhanced> {
           merged.insert(index.clamp(0, merged.length), model);
         }
       }
-      ensure('gpt-5.6-sol', 0);
-      ensure('gpt-5.6-terra', 1);
-      ensure('gpt-5.6-luna', 2);
+      ensure('gpt-6-astra', 0);
+      ensure('gpt-5.6-sol', 1);
+      ensure('gpt-5.6-terra', 2);
+      ensure('gpt-5.6-luna', 3);
       return merged;
     }
 
